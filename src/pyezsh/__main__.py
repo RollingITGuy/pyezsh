@@ -1,4 +1,4 @@
-from pyezsh.app import App
+from pyezsh.app.app import App
 from pyezsh.ui import Component
 
 

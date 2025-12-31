@@ -15,12 +15,14 @@
 # 12/18/2025	Paul G. LeDuc				Add ctor args + geometry guards
 # 12/18/2025	Paul G. LeDuc				Add root_frame + optional scrolling
 # 12/26/2025	Paul G. LeDuc				Add component management lifecycle
+# 12/30/2025	Paul G. LeDuc				Add component id/name indexing + lookup
+# 12/30/2025	Paul G. LeDuc				Add command + keymap ownership
 # ---------------------------------------------------------------------------
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Optional
 
 import tkinter as tk
 from tkinter import ttk
@@ -29,6 +31,8 @@ from tkinter import ttk
 import ttkthemes as ttk_themes
 
 from pyezsh.ui import Component
+from pyezsh.app.commands import Command, CommandRegistry
+from pyezsh.app.keys import KeyMap
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,8 +73,22 @@ class App(tk.Tk):
 		self.title_text = title or "pyezsh"
 		self.title(self.title_text)
 
+		# -------------------------------------------------------------------
+		# Command + keymap (invocation spine)
+		# -------------------------------------------------------------------
+
+		self.commands = CommandRegistry()
+		self.keymap = KeyMap()
+
+		# -------------------------------------------------------------------
 		# Component registry (explicit ownership)
+		# -------------------------------------------------------------------
+
 		self.components: list[Component] = []
+
+		# Component indexes (ids must be unique within the App)
+		self._components_by_id: dict[str, Component] = {}
+		self._components_by_name: dict[str, list[Component]] = {}
 
 		# Ensure Tk has computed screen dimensions
 		self.update_idletasks()
@@ -88,6 +106,19 @@ class App(tk.Tk):
 			self.root_frame.pack(fill="both", expand=True)
 
 	# -----------------------------------------------------------------------
+	# Command / keymap wrappers
+	# -----------------------------------------------------------------------
+
+	def register_command(self, command: Command) -> None:
+		self.commands.register(command)
+
+	def invoke(self, command_id: str) -> Any:
+		return self.commands.invoke(command_id)
+
+	def bind_key(self, keyseq: str, command_id: str, *, overwrite: bool = True) -> None:
+		self.keymap.bind(keyseq, command_id, overwrite=overwrite)
+
+	# -----------------------------------------------------------------------
 	# Component lifecycle management
 	# -----------------------------------------------------------------------
 
@@ -95,11 +126,25 @@ class App(tk.Tk):
 		"""
 		Add a top-level component to the app.
 
-		The component is expected to expose:
-			- mount(parent)
-			- layout()
+		Component IDs must be unique within the App.
 		"""
+		if component.id is None:
+			raise ValueError("Component id must not be None (Component should auto-generate one)")
+
+		if component.id in self._components_by_id:
+			existing = self._components_by_id[component.id]
+			raise ValueError(
+				f"Duplicate component id {component.id!r}: "
+				f"existing={existing.__class__.__name__} name={existing.name!r}, "
+				f"new={component.__class__.__name__} name={component.name!r}"
+			)
+
 		self.components.append(component)
+		self._components_by_id[component.id] = component
+
+		if component.name is not None:
+			self._components_by_name.setdefault(component.name, []).append(component)
+
 		component.mount(self.root_frame)
 		component.layout()
 
@@ -107,10 +152,23 @@ class App(tk.Tk):
 		"""
 		Remove a component from the app and destroy it.
 		"""
-		if component in self.components:
-			component.destroy()
-			self.components.remove(component)
-			self.layout_components()
+		if component not in self.components:
+			return
+
+		component.destroy()
+		self.components.remove(component)
+
+		if component.id is not None:
+			self._components_by_id.pop(component.id, None)
+
+		if component.name is not None:
+			items = self._components_by_name.get(component.name, [])
+			if component in items:
+				items.remove(component)
+				if not items:
+					self._components_by_name.pop(component.name, None)
+
+		self.layout_components()
 
 	def clear_components(self) -> None:
 		"""
@@ -118,7 +176,10 @@ class App(tk.Tk):
 		"""
 		for component in list(self.components):
 			component.destroy()
+
 		self.components.clear()
+		self._components_by_id.clear()
+		self._components_by_name.clear()
 
 	def layout_components(self) -> None:
 		"""
@@ -135,6 +196,30 @@ class App(tk.Tk):
 			component.redraw()
 
 		self.update_idletasks()
+
+	# -----------------------------------------------------------------------
+	# Component lookup
+	# -----------------------------------------------------------------------
+
+	def get_component(self, component_id: str) -> Optional[Component]:
+		"""
+		Get a top-level component by id.
+		"""
+		return self._components_by_id.get(component_id)
+
+	def find_components_by_name(self, name: str) -> list[Component]:
+		"""
+		Get all top-level components with a given name.
+		Names are not required to be unique.
+		"""
+		return list(self._components_by_name.get(name, []))
+
+	def find_component_by_name(self, name: str) -> Optional[Component]:
+		"""
+		Get the first top-level component with a given name (if any).
+		"""
+		items = self._components_by_name.get(name, [])
+		return items[0] if items else None
 
 	# -----------------------------------------------------------------------
 	# Window & root setup

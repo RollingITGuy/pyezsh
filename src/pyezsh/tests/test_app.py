@@ -1,3 +1,23 @@
+# ---------------------------------------------------------------------------
+# File: test_app.py
+# ---------------------------------------------------------------------------
+# Description:
+#   Unit tests for the App class.
+#
+# Notes:
+#   - Validates App lifecycle and component management.
+#   - Uses a minimal test Component for isolation.
+#
+# ---------------------------------------------------------------------------
+# Revision History
+# ---------------------------------------------------------------------------
+# Date			Author						Change
+# ---------------------------------------------------------------------------
+# 12/26/2025	Paul G. LeDuc				Initial tests
+# 12/30/2025	Paul G. LeDuc				Update for component id/name support
+# 12/30/2025	Paul G. LeDuc				Update for tk.Misc parent typing
+# ---------------------------------------------------------------------------
+
 import tkinter as tk
 from tkinter import ttk
 
@@ -6,14 +26,18 @@ from pyezsh.ui import Component
 
 
 class _TestComponent(Component):
-	def build(self, parent: tk.Widget) -> tk.Widget:
+	"""
+	Minimal concrete Component used for App tests.
+	"""
+	def build(self, parent: tk.Misc) -> tk.Widget:
 		return ttk.Frame(parent)
 
 
 def test_app_default_title():
 	app = App(title=None)
 	try:
-		assert app.title() == "pyezsh"
+		# Validate window title via Tk
+		assert app.wm_title() == "pyezsh"
 	finally:
 		app.destroy()
 
