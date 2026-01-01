@@ -10,6 +10,8 @@
 #	  The robust fix is to use the native application (Apple) menu via name="apple".
 #	- This implementation ensures an Apple menu exists on macOS and can optionally
 #	  auto-inject standard items (About, Quit) if they are registered commands.
+#	- When auto_app_menu=True on macOS, About/Quit are filtered from explicit menus
+#	  to avoid duplication while keeping menus=(...) cross-platform.
 #
 # ---------------------------------------------------------------------------
 # Revision History
@@ -19,7 +21,8 @@
 # 12/31/2025	Paul G. LeDuc				Initial coding / release
 # 12/31/2025	Paul G. LeDuc				Use macOS Apple menu for native Quit routing
 # 12/31/2025	Paul G. LeDuc				Ensure Apple menu + optional auto standard items
-# 12/31/2025	ChatGPT						Type registry as CommandRegistry for Pylance
+# 12/31/2025	Paul G. LeDuc				Type registry as CommandRegistry for Pylance
+# 01/01/2026	Paul G. LeDuc				Filter About/Quit from explicit menus on macOS when auto_app_menu=True
 # ---------------------------------------------------------------------------
 
 from __future__ import annotations
@@ -151,8 +154,9 @@ class MenuBar(Component):
 		if is_mac and self._auto_app_menu:
 			self._add_apple_menu(ctx, registry)
 
-		# 2) Render the user-provided menus next.
-		for m in self._menus:
+		# 2) Render the user-provided menus next (filtered on macOS when auto_app_menu=True).
+		menus = self._get_effective_menus(is_mac=is_mac)
+		for m in menus:
 			# If caller included an explicit "App"/"Pyezsh" menu, we still render it
 			# as a normal menu. The true Apple menu is handled above.
 			dropdown = tk.Menu(self._menubar, tearoff=0)
@@ -255,3 +259,66 @@ class MenuBar(Component):
 		registry = self._get_registry()
 		if registry is not None:
 			registry.execute(command_id, self._ctx(), require_visible=True)
+
+	# -----------------------------------------------------------------------
+	# Menu filtering (macOS duplication prevention)
+	# -----------------------------------------------------------------------
+
+	def _get_effective_menus(self, *, is_mac: bool) -> tuple[MenuDef, ...]:
+		"""
+		Return menus to render for this platform.
+
+		On macOS, when auto_app_menu=True, About/Quit are rendered in the native
+		Apple menu, so we filter them out of explicit menus to avoid duplication.
+		"""
+		if is_mac and self._auto_app_menu:
+			return self._filter_macos_reserved_items(self._menus)
+		return self._menus
+
+	def _filter_macos_reserved_items(self, menus: tuple[MenuDef, ...]) -> tuple[MenuDef, ...]:
+		"""
+		Remove reserved macOS App-menu items from explicit menus.
+
+		- Removes "app.about" and "app.quit" wherever they appear.
+		- Cleans up separators (no leading/trailing/double).
+		- Drops menus that become empty after filtering.
+		"""
+		reserved: set[str] = {"app.about", "app.quit"}
+
+		def cleanup_separators(items: list[Optional[str]]) -> tuple[Optional[str], ...]:
+			# Remove leading, trailing, and duplicate separators (None).
+			out: list[Optional[str]] = []
+			prev_sep = True  # treat start as separator to drop leading
+			for it in items:
+				if it is None:
+					if prev_sep:
+						continue
+					out.append(None)
+					prev_sep = True
+					continue
+				out.append(it)
+				prev_sep = False
+
+			while out and out[-1] is None:
+				out.pop()
+
+			return tuple(out)
+
+		filtered: list[MenuDef] = []
+		for m in menus:
+			new_items: list[Optional[str]] = []
+			for it in m.items:
+				if it is None:
+					new_items.append(None)
+					continue
+				if it in reserved:
+					continue
+				new_items.append(it)
+
+			clean = cleanup_separators(new_items)
+			if not clean:
+				continue
+
+			filtered.append(MenuDef(label=m.label, items=clean))
+
+		return tuple(filtered)
