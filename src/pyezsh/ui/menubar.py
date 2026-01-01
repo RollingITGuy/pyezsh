@@ -23,6 +23,7 @@
 # 12/31/2025	Paul G. LeDuc				Ensure Apple menu + optional auto standard items
 # 12/31/2025	Paul G. LeDuc				Type registry as CommandRegistry for Pylance
 # 01/01/2026	Paul G. LeDuc				Filter About/Quit from explicit menus on macOS when auto_app_menu=True
+# 01/01/2026	Paul G. LeDuc				Add Preferences to Apple menu + filter from explicit menus on macOS
 # ---------------------------------------------------------------------------
 
 from __future__ import annotations
@@ -173,20 +174,25 @@ class MenuBar(Component):
 
 		apple = tk.Menu(self._menubar, name="apple", tearoff=0)
 
-		# Optionally inject standard items if those commands exist.
-		# (No hard dependency: if you haven't registered app.about, it just won't show.)
+		# Standard macOS ordering:
+		#	About
+		#	---
+		#	Preferences...
+		#	---
+		#	Quit
 		items: list[Optional[str]] = []
 
 		if self._command_exists(registry, "app.about"):
 			items.append("app.about")
-			items.append(None)
 
-		# Future: preferences could go here when you add it.
-		# if self._command_exists(registry, "app.preferences"):
-		# 	items.append("app.preferences")
-		# 	items.append(None)
+		if self._command_exists(registry, "app.preferences"):
+			if items:
+				items.append(None)
+			items.append("app.preferences")
 
 		if self._command_exists(registry, "app.quit"):
+			if items:
+				items.append(None)
 			items.append("app.quit")
 
 		self._populate_dropdown(apple, tuple(items), ctx, registry)
@@ -283,7 +289,7 @@ class MenuBar(Component):
 		- Cleans up separators (no leading/trailing/double).
 		- Drops menus that become empty after filtering.
 		"""
-		reserved: set[str] = {"app.about", "app.quit"}
+		reserved: set[str] = {"app.about", "app.preferences", "app.quit"}
 
 		def cleanup_separators(items: list[Optional[str]]) -> tuple[Optional[str], ...]:
 			# Remove leading, trailing, and duplicate separators (None).

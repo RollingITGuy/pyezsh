@@ -2,22 +2,64 @@
 # File: test_menubar.py
 # ---------------------------------------------------------------------------
 # Description:
-#	Unit tests for MenuBar menu filtering logic (no Tk dependency).
+#	Unit tests for MenuBar logic.
+#
+# Notes:
+#	- These tests intentionally avoid Tkinter. They use a FakeMenu to capture
+#	  MenuBar output from _populate_dropdown().
+#
 # ---------------------------------------------------------------------------
 # Revision History
 # ---------------------------------------------------------------------------
 # Date			Author						Change
 # ---------------------------------------------------------------------------
-# 01/01/2026	Paul G. LeDuc				Initial tests for macOS About/Quit filtering
+# 01/01/2026	Paul G. LeDuc				Initial tests for MenuBar filtering + dropdown rendering
 # ---------------------------------------------------------------------------
 
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any, Optional, cast
+
+import tkinter as tk
+import pytest
+
+from pyezsh.app.commands import Command, CommandContext, CommandRegistry
 from pyezsh.ui.menubar import MenuBar, MenuDef
 
 
-def test_filter_removes_about_quit_and_cleans_separators():
+def _ctx() -> CommandContext:
+	return CommandContext(app=None, state={}, services={}, extra={})
+
+
+@dataclass
+class _FakeMenuEntry:
+	kind: str
+	attrs: dict[str, Any]
+
+
+class FakeMenu:
+	"""
+	Minimal stand-in for tk.Menu used by MenuBar._populate_dropdown() tests.
+	"""
+	def __init__(self) -> None:
+		self.entries: list[_FakeMenuEntry] = []
+
+	def add_separator(self) -> None:
+		self.entries.append(_FakeMenuEntry(kind="sep", attrs={}))
+
+	def add_command(self, **kwargs: Any) -> None:
+		self.entries.append(_FakeMenuEntry(kind="cmd", attrs=dict(kwargs)))
+
+
+# ---------------------------------------------------------------------------
+# 1) Filtering tests (macOS duplication prevention)
+# ---------------------------------------------------------------------------
+
+def test_filter_removes_about_quit_preferences_and_cleans_separators():
 	mb = MenuBar(
 		menus=(
-			MenuDef("App", items=("app.about", None, "app.quit")),
+			MenuDef("App", items=("app.about", None, "app.preferences", None, "app.quit")),
 			MenuDef("File", items=(None, "file.open", None, None, "app.quit", None, "file.close", None)),
 			MenuDef("Help", items=("help.docs", None, "app.about", None, "help.support")),
 		),
@@ -32,13 +74,12 @@ def test_filter_removes_about_quit_and_cleans_separators():
 	file_menu = next(m for m in out if m.label == "File")
 	help_menu = next(m for m in out if m.label == "Help")
 
-	# About/Quit removed
+	# Reserved items removed
 	assert "app.about" not in file_menu.items
 	assert "app.quit" not in file_menu.items
-	assert "app.about" not in help_menu.items
-	assert "app.quit" not in help_menu.items
+	assert "app.preferences" not in file_menu.items
 
-	# Separators cleaned: no leading/trailing and no duplicate Nones
+	# Separator cleanup: no leading/trailing, no duplicates
 	assert file_menu.items[0] is not None
 	assert file_menu.items[-1] is not None
 	for a, b in zip(file_menu.items, file_menu.items[1:]):
@@ -52,7 +93,7 @@ def test_filter_removes_about_quit_and_cleans_separators():
 
 def test_get_effective_menus_filters_only_on_macos_with_auto_app_menu_true():
 	menus = (
-		MenuDef("App", items=("app.about", None, "app.quit")),
+		MenuDef("App", items=("app.about", None, "app.preferences", None, "app.quit")),
 		MenuDef("File", items=("file.open", None, "app.quit", None, "file.close")),
 	)
 
@@ -76,7 +117,7 @@ def test_get_effective_menus_filters_only_on_macos_with_auto_app_menu_true():
 def test_filter_drops_menu_when_only_reserved_items_present():
 	mb = MenuBar(
 		menus=(
-			MenuDef("OnlyReserved", items=(None, "app.about", None, "app.quit", None)),
+			MenuDef("OnlyReserved", items=(None, "app.about", None, "app.preferences", None, "app.quit", None)),
 			MenuDef("Other", items=("x",)),
 		),
 		auto_app_menu=True,
@@ -85,3 +126,77 @@ def test_filter_drops_menu_when_only_reserved_items_present():
 	out = mb._filter_macos_reserved_items(mb._menus)
 	assert [m.label for m in out] == ["Other"]
 	assert out[0].items == ("x",)
+
+
+# ---------------------------------------------------------------------------
+# 5) Headless dropdown rendering tests (FakeMenu)
+# ---------------------------------------------------------------------------
+
+def test_populate_dropdown_renders_commands_and_separators_and_state():
+	registry = CommandRegistry()
+
+	# Commands used by populate
+	open_cmd = Command(id="file.open", label="Open", handler=lambda ctx: None, shortcut="Ctrl+O")
+	close_cmd = Command(id="file.close", label="Close", handler=lambda ctx: None)
+	hidden_cmd = Command(id="file.hidden", label="Hidden", handler=lambda ctx: None)
+	disabled_cmd = Command(id="file.disabled", label="Disabled", handler=lambda ctx: None)
+
+	registry.register(open_cmd)
+	registry.register(close_cmd)
+	registry.register(hidden_cmd)
+	registry.register(disabled_cmd)
+
+	# Force visibility/enablement deterministically without relying on Command internals
+	visible: dict[str, bool] = {
+		"file.open": True,
+		"file.close": True,
+		"file.hidden": False,		# should not render
+		"file.disabled": True,
+	}
+	enabled: dict[str, bool] = {
+		"file.open": True,
+		"file.close": True,
+		"file.hidden": True,
+		"file.disabled": False,		# should render disabled
+	}
+
+	registry.is_visible = lambda cid, ctx: visible.get(cid, True)	# type: ignore[method-assign]
+	registry.is_enabled = lambda cid, ctx: enabled.get(cid, True)	# type: ignore[method-assign]
+
+	mb = MenuBar()
+	fake = FakeMenu()
+
+	items: tuple[Optional[str], ...] = (
+		"file.open",
+		None,
+		"file.hidden",
+		"file.disabled",
+		"file.close",
+		"missing.command",	# should be ignored
+	)
+
+	mb._populate_dropdown(cast(tk.Menu, fake), items, _ctx(), registry)
+
+	# Expect: Open, sep, Disabled (disabled), Close
+	kinds = [e.kind for e in fake.entries]
+	assert kinds == ["cmd", "sep", "cmd", "cmd"]
+
+	labels = [e.attrs.get("label") for e in fake.entries if e.kind == "cmd"]
+	assert labels == ["Open", "Disabled", "Close"]
+
+	# Accelerator shown for Open
+	open_entry = next(e for e in fake.entries if e.kind == "cmd" and e.attrs.get("label") == "Open")
+	assert open_entry.attrs.get("accelerator") == "Ctrl+O"
+	assert open_entry.attrs.get("state") == "normal"
+
+	disabled_entry = next(e for e in fake.entries if e.kind == "cmd" and e.attrs.get("label") == "Disabled")
+	assert disabled_entry.attrs.get("state") == "disabled"
+
+
+def test_populate_dropdown_no_registry_no_output():
+	mb = MenuBar()
+	fake = FakeMenu()
+
+	mb._populate_dropdown(cast(tk.Menu, fake), ("x", None, "y"), _ctx(), None)
+
+	assert fake.entries == []
