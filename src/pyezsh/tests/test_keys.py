@@ -13,7 +13,7 @@
 # Date			Author						Change
 # ---------------------------------------------------------------------------
 # 12/30/2025	Paul G. LeDuc				Initial tests
-# 12/30/2025	ChatGPT						Add KeyMap coverage
+# 12/30/2025	Paul G. LeDuc				Add KeyMap coverage
 # ---------------------------------------------------------------------------
 
 import pytest
