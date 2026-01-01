@@ -5,8 +5,9 @@
 #	Unit tests for MenuBar logic.
 #
 # Notes:
-#	- These tests intentionally avoid Tkinter. They use a FakeMenu to capture
+#	- These tests intentionally avoid Tkinter rendering. They use a FakeMenu to capture
 #	  MenuBar output from _populate_dropdown().
+#	- Submenu support requires FakeMenu.add_cascade().
 #
 # ---------------------------------------------------------------------------
 # Revision History
@@ -14,18 +15,25 @@
 # Date			Author						Change
 # ---------------------------------------------------------------------------
 # 01/01/2026	Paul G. LeDuc				Initial tests for MenuBar filtering + dropdown rendering
+# 01/01/2026	Paul G. LeDuc				Add submenu + recursive filtering tests (MenuDef expressiveness)
+# 01/01/2026	Paul G. LeDuc				Use pyezsh.ui public exports + loosen legacy item typing
 # ---------------------------------------------------------------------------
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Optional, cast
+from typing import Any, cast
 
 import tkinter as tk
-import pytest
 
 from pyezsh.app.commands import Command, CommandContext, CommandRegistry
-from pyezsh.ui.menubar import MenuBar, MenuDef
+from pyezsh.ui import (
+	MenuBar,
+	MenuDef,
+	MenuCommand,
+	MenuSeparator,
+	MenuSubmenu,
+)
 
 
 def _ctx() -> CommandContext:
@@ -51,6 +59,9 @@ class FakeMenu:
 	def add_command(self, **kwargs: Any) -> None:
 		self.entries.append(_FakeMenuEntry(kind="cmd", attrs=dict(kwargs)))
 
+	def add_cascade(self, **kwargs: Any) -> None:
+		self.entries.append(_FakeMenuEntry(kind="cascade", attrs=dict(kwargs)))
+
 
 # ---------------------------------------------------------------------------
 # 1) Filtering tests (macOS duplication prevention)
@@ -74,7 +85,7 @@ def test_filter_removes_about_quit_preferences_and_cleans_separators():
 	file_menu = next(m for m in out if m.label == "File")
 	help_menu = next(m for m in out if m.label == "Help")
 
-	# Reserved items removed
+	# Reserved items removed (legacy tuple form)
 	assert "app.about" not in file_menu.items
 	assert "app.quit" not in file_menu.items
 	assert "app.preferences" not in file_menu.items
@@ -101,7 +112,7 @@ def test_get_effective_menus_filters_only_on_macos_with_auto_app_menu_true():
 	mb1 = MenuBar(menus=menus, auto_app_menu=True)
 	eff1 = mb1._get_effective_menus(is_mac=True)
 	assert [m.label for m in eff1] == ["File"]
-	assert eff1[0].items == ("file.open", None, "file.close")
+	assert eff1[0].items == (MenuCommand("file.open"), MenuSeparator(), MenuCommand("file.close"))
 
 	# macOS + auto_app_menu=False => unchanged
 	mb2 = MenuBar(menus=menus, auto_app_menu=False)
@@ -125,7 +136,52 @@ def test_filter_drops_menu_when_only_reserved_items_present():
 
 	out = mb._filter_macos_reserved_items(mb._menus)
 	assert [m.label for m in out] == ["Other"]
-	assert out[0].items == ("x",)
+	assert out[0].items == (MenuCommand("x"),)
+
+def test_filter_removes_reserved_items_inside_submenus():
+	mb = MenuBar(
+		menus=(
+			MenuDef(
+				"Top",
+				items=(
+					MenuSubmenu(
+						label="App",
+						items=(
+							MenuCommand("app.about"),
+							MenuSeparator(),
+							MenuCommand("app.preferences"),
+							MenuSeparator(),
+							MenuCommand("app.quit"),
+						),
+					),
+					MenuSubmenu(
+						label="File",
+						items=(
+							MenuCommand("file.open"),
+							MenuSeparator(),
+							MenuCommand("app.quit"),
+							MenuSeparator(),
+							MenuCommand("file.close"),
+						),
+					),
+				),
+			),
+		),
+		auto_app_menu=True,
+	)
+
+	out = mb._filter_macos_reserved_items(mb._menus)
+
+	assert len(out) == 1
+	assert out[0].label == "Top"
+
+	# After filtering, "App" submenu should be dropped; "File" should remain.
+	top_items = list(mb._normalize_items(out[0].items))
+	submenus = [it for it in top_items if isinstance(it, MenuSubmenu)]
+	labels = [s.label for s in submenus]
+
+	assert "App" not in labels
+	assert "File" in labels
 
 
 # ---------------------------------------------------------------------------
@@ -166,7 +222,7 @@ def test_populate_dropdown_renders_commands_and_separators_and_state():
 	mb = MenuBar()
 	fake = FakeMenu()
 
-	items: tuple[Optional[str], ...] = (
+	items = (
 		"file.open",
 		None,
 		"file.hidden",
@@ -191,6 +247,34 @@ def test_populate_dropdown_renders_commands_and_separators_and_state():
 
 	disabled_entry = next(e for e in fake.entries if e.kind == "cmd" and e.attrs.get("label") == "Disabled")
 	assert disabled_entry.attrs.get("state") == "disabled"
+
+
+def test_populate_dropdown_supports_submenus():
+	registry = CommandRegistry()
+	registry.register(Command(id="file.open", label="Open", handler=lambda ctx: None))
+	registry.register(Command(id="file.close", label="Close", handler=lambda ctx: None))
+
+	mb = MenuBar()
+	root = FakeMenu()
+
+	items = (
+		MenuSubmenu(
+			label="File",
+			items=(
+				MenuCommand("file.open"),
+				MenuSeparator(),
+				MenuCommand("file.close"),
+			),
+		),
+	)
+
+	mb._populate_dropdown(cast(tk.Menu, root), items, _ctx(), registry)
+
+	# One cascade at top level
+	assert len(root.entries) == 1
+	assert root.entries[0].kind == "cascade"
+	assert root.entries[0].attrs.get("label") == "File"
+	assert root.entries[0].attrs.get("menu") is not None
 
 
 def test_populate_dropdown_no_registry_no_output():

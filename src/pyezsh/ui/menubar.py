@@ -9,9 +9,10 @@
 #	- On macOS, ⌘Q is not reliably delivered as a KeyPress while a menu is posted.
 #	  The robust fix is to use the native application (Apple) menu via name="apple".
 #	- This implementation ensures an Apple menu exists on macOS and can optionally
-#	  auto-inject standard items (About, Quit) if they are registered commands.
-#	- When auto_app_menu=True on macOS, About/Quit are filtered from explicit menus
-#	  to avoid duplication while keeping menus=(...) cross-platform.
+#	  auto-inject standard items (About, Preferences, Quit) if they are registered commands.
+#	- When auto_app_menu=True on macOS, About/Preferences/Quit are filtered from explicit menus
+#	  (including submenus) to avoid duplication while keeping menus=(...) cross-platform.
+#	- Menu item definitions live in pyezsh.ui.menu_defs (typed items + legacy compatibility).
 #
 # ---------------------------------------------------------------------------
 # Revision History
@@ -24,30 +25,27 @@
 # 12/31/2025	Paul G. LeDuc				Type registry as CommandRegistry for Pylance
 # 01/01/2026	Paul G. LeDuc				Filter About/Quit from explicit menus on macOS when auto_app_menu=True
 # 01/01/2026	Paul G. LeDuc				Add Preferences to Apple menu + filter from explicit menus on macOS
+# 01/01/2026	Paul G. LeDuc				Add typed menu items + submenu support (menu_defs.py)
+# 01/01/2026	Paul G. LeDuc				Make submenu rendering test-friendly (FakeMenu support)
 # ---------------------------------------------------------------------------
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Optional, cast, Callable
+from typing import cast, Callable, Any, Optional
 
 import sys
 import tkinter as tk
 
 from pyezsh.app.commands import CommandContext, CommandRegistry
 from pyezsh.ui import Component
-
-
-@dataclass(frozen=True, slots=True)
-class MenuDef:
-	"""
-	MenuDef
-
-	label:	Top-level menu label (e.g., "File")
-	items:	Tuple of command ids or None for separator.
-	"""
-	label: str
-	items: tuple[Optional[str], ...] = field(default_factory=tuple)
+from pyezsh.ui.menu_defs import (
+	MenuDef,
+	MenuItem,
+	MenuItemLike,
+	MenuSeparator,
+	MenuCommand,
+	MenuSubmenu,
+)
 
 
 class MenuBar(Component):
@@ -158,8 +156,6 @@ class MenuBar(Component):
 		# 2) Render the user-provided menus next (filtered on macOS when auto_app_menu=True).
 		menus = self._get_effective_menus(is_mac=is_mac)
 		for m in menus:
-			# If caller included an explicit "App"/"Pyezsh" menu, we still render it
-			# as a normal menu. The true Apple menu is handled above.
 			dropdown = tk.Menu(self._menubar, tearoff=0)
 			self._populate_dropdown(dropdown, m.items, ctx, registry)
 			self._menubar.add_cascade(label=m.label, menu=dropdown)
@@ -200,23 +196,81 @@ class MenuBar(Component):
 		# Important: do NOT supply a label for the Apple menu.
 		self._menubar.add_cascade(menu=apple)
 
+	def _normalize_items(self, items: tuple[MenuItemLike, ...]) -> tuple[MenuItem, ...]:
+		"""
+		Normalize legacy menu item representations into typed MenuItem objects.
+
+		Legacy:
+			- "cmd.id" -> MenuCommand("cmd.id")
+			- None -> MenuSeparator()
+		"""
+		out: list[MenuItem] = []
+		for it in items:
+			if it is None:
+				out.append(MenuSeparator())
+				continue
+			if isinstance(it, str):
+				out.append(MenuCommand(it))
+				continue
+			out.append(it)
+		return tuple(out)
+
+	def _cleanup_separators(self, items: list[MenuItem]) -> tuple[MenuItem, ...]:
+		"""
+		Remove leading/trailing and duplicate separators.
+		"""
+		out: list[MenuItem] = []
+		prev_sep = True
+		for it in items:
+			is_sep = isinstance(it, MenuSeparator)
+			if is_sep:
+				if prev_sep:
+					continue
+				out.append(it)
+				prev_sep = True
+				continue
+			out.append(it)
+			prev_sep = False
+
+		while out and isinstance(out[-1], MenuSeparator):
+			out.pop()
+
+		return tuple(out)
+
 	def _populate_dropdown(
 		self,
-		dropdown: tk.Menu,
-		items: tuple[Optional[str], ...],
+		dropdown: Any,
+		items: tuple[MenuItemLike, ...],
 		ctx: CommandContext,
 		registry: CommandRegistry | None,
 	) -> None:
 		if registry is None:
 			return
 
-		for item in items:
-			if item is None:
+		typed_items = self._normalize_items(items)
+
+		for item in typed_items:
+			if isinstance(item, MenuSeparator):
 				dropdown.add_separator()
 				continue
 
+			if isinstance(item, MenuSubmenu):
+				# Runtime: use real tk.Menu
+				# Tests: use FakeMenu.__class__ so we remain headless
+				if isinstance(dropdown, tk.Menu):
+					submenu = tk.Menu(dropdown, tearoff=0)
+				else:
+					submenu = dropdown.__class__()
+
+				self._populate_dropdown(submenu, item.items, ctx, registry)
+				dropdown.add_cascade(label=item.label, menu=submenu)
+				continue
+
+			# MenuCommand
+			command_id = item.id
+
 			try:
-				cmd = registry.get(item)
+				cmd = registry.get(command_id)
 			except Exception:
 				continue
 			if cmd is None:
@@ -235,8 +289,8 @@ class MenuBar(Component):
 			except Exception:
 				enabled = False
 
-			label = cmd.label
-			accel = cmd.shortcut or ""
+			label = item.label if item.label is not None else cmd.label
+			accel = item.accelerator if item.accelerator is not None else (cmd.shortcut or "")
 
 			dropdown.add_command(
 				label=label,
@@ -274,7 +328,7 @@ class MenuBar(Component):
 		"""
 		Return menus to render for this platform.
 
-		On macOS, when auto_app_menu=True, About/Quit are rendered in the native
+		On macOS, when auto_app_menu=True, About/Preferences/Quit are rendered in the native
 		Apple menu, so we filter them out of explicit menus to avoid duplication.
 		"""
 		if is_mac and self._auto_app_menu:
@@ -283,48 +337,44 @@ class MenuBar(Component):
 
 	def _filter_macos_reserved_items(self, menus: tuple[MenuDef, ...]) -> tuple[MenuDef, ...]:
 		"""
-		Remove reserved macOS App-menu items from explicit menus.
+		Remove reserved macOS App-menu items from explicit menus (including submenus).
 
-		- Removes "app.about" and "app.quit" wherever they appear.
+		- Removes "app.about", "app.preferences", and "app.quit" wherever they appear.
 		- Cleans up separators (no leading/trailing/double).
-		- Drops menus that become empty after filtering.
+		- Drops menus/submenus that become empty after filtering.
 		"""
 		reserved: set[str] = {"app.about", "app.preferences", "app.quit"}
 
-		def cleanup_separators(items: list[Optional[str]]) -> tuple[Optional[str], ...]:
-			# Remove leading, trailing, and duplicate separators (None).
-			out: list[Optional[str]] = []
-			prev_sep = True  # treat start as separator to drop leading
-			for it in items:
-				if it is None:
-					if prev_sep:
+		def filter_items(items: tuple[MenuItemLike, ...]) -> tuple[MenuItem, ...]:
+			typed = list(self._normalize_items(items))
+			out: list[MenuItem] = []
+
+			for it in typed:
+				if isinstance(it, MenuSeparator):
+					out.append(it)
+					continue
+
+				if isinstance(it, MenuSubmenu):
+					sub = filter_items(it.items)
+					sub_list = list(sub)
+					sub_clean = self._cleanup_separators(sub_list)
+					if not sub_clean:
 						continue
-					out.append(None)
-					prev_sep = True
+					out.append(MenuSubmenu(label=it.label, items=sub_clean))
+					continue
+
+				# MenuCommand
+				if it.id in reserved:
 					continue
 				out.append(it)
-				prev_sep = False
 
-			while out and out[-1] is None:
-				out.pop()
-
-			return tuple(out)
+			return self._cleanup_separators(out)
 
 		filtered: list[MenuDef] = []
 		for m in menus:
-			new_items: list[Optional[str]] = []
-			for it in m.items:
-				if it is None:
-					new_items.append(None)
-					continue
-				if it in reserved:
-					continue
-				new_items.append(it)
-
-			clean = cleanup_separators(new_items)
-			if not clean:
+			items = filter_items(m.items)
+			if not items:
 				continue
-
-			filtered.append(MenuDef(label=m.label, items=clean))
+			filtered.append(MenuDef(label=m.label, items=items))
 
 		return tuple(filtered)
