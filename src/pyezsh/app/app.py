@@ -2,9 +2,13 @@
 # File: app.py
 # ---------------------------------------------------------------------------
 # Description:
-#   Starting point for pyezsh app.
+#	Starting point for pyezsh app.
 #
 # Notes:
+#	- App owns CommandRegistry and KeyMap.
+#	- Command execution uses CommandContext (app/state/services/extra).
+#	- UI key events can later route to:
+#		self.invoke_shortcut("Ctrl+S") or self.commands.execute_shortcut(...)
 #
 # ---------------------------------------------------------------------------
 # Revision History
@@ -17,12 +21,20 @@
 # 12/26/2025	Paul G. LeDuc				Add component management lifecycle
 # 12/30/2025	Paul G. LeDuc				Add component id/name indexing + lookup
 # 12/30/2025	Paul G. LeDuc				Add command + keymap ownership
+# 12/31/2025	Paul G. LeDuc				Wire CommandContext + shortcut execution
+# 12/31/2025	Paul G. LeDuc				Add Tk key routing (event -> keyseq -> command)
+# 12/31/2025	Paul G. LeDuc				Bind explicit key sequences for routing
+# 12/31/2025	Paul G. LeDuc				Hook macOS native Quit (tk::mac::Quit)
+# 12/31/2025	Paul G. LeDuc				Make Quit routing single-path + safer Tcl hook
+# 12/31/2025	Paul G. LeDuc				Make macOS Quit hook idempotent + re-installable
+# 12/31/2025	Paul G. LeDuc				Remove quit-hook rename-debug + make debug hooks safe
 # ---------------------------------------------------------------------------
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Optional
+import sys
 
 import tkinter as tk
 from tkinter import ttk
@@ -31,8 +43,10 @@ from tkinter import ttk
 import ttkthemes as ttk_themes
 
 from pyezsh.ui import Component
-from pyezsh.app.commands import Command, CommandRegistry
+from pyezsh.app.commands import Command, CommandContext, CommandRegistry
 from pyezsh.app.keys import KeyMap
+from pyezsh.app.default_commands import register_default_commands
+from pyezsh.app.default_keys import build_default_keymap
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,20 +87,43 @@ class App(tk.Tk):
 		self.title_text = title or "pyezsh"
 		self.title(self.title_text)
 
+		# macOS Quit hook installation guard (idempotent)
+		self._mac_quit_hook_installed: bool = False
+
 		# -------------------------------------------------------------------
 		# Command + keymap (invocation spine)
 		# -------------------------------------------------------------------
 
 		self.commands = CommandRegistry()
-		self.keymap = KeyMap()
+		self.keymap = build_default_keymap()
+
+		register_default_commands(self.commands)
+		self.apply_keymap(replace=True)
+
+		# Route window-close through the command spine as well.
+		self.protocol("WM_DELETE_WINDOW", lambda: self.invoke("app.quit"))
+
+		# -------------------------------------------------------------------
+		# State/services placeholders (for CommandContext)
+		# -------------------------------------------------------------------
+
+		self.state: dict[str, Any] = {}
+		self.services: dict[str, Any] = {}
+
+		# -------------------------------------------------------------------
+		# Key routing (explicit Tk keyseq bindings + platform hooks)
+		# -------------------------------------------------------------------
+
+		# Install key routing + macOS quit hook early.
+		# If/when a menubar is attached, MenuBar can call _install_macos_quit_hook()
+		# again safely (it is idempotent).
+		self._enable_key_routing()
 
 		# -------------------------------------------------------------------
 		# Component registry (explicit ownership)
 		# -------------------------------------------------------------------
 
 		self.components: list[Component] = []
-
-		# Component indexes (ids must be unique within the App)
 		self._components_by_id: dict[str, Component] = {}
 		self._components_by_name: dict[str, list[Component]] = {}
 
@@ -109,14 +146,128 @@ class App(tk.Tk):
 	# Command / keymap wrappers
 	# -----------------------------------------------------------------------
 
-	def register_command(self, command: Command) -> None:
-		self.commands.register(command)
+	def _build_command_context(self, *, extra: dict[str, Any] | None = None) -> CommandContext:
+		"""
+		Build the CommandContext used for enabled/visible evaluation + command execution.
+		"""
+		return CommandContext(
+			app=self,
+			state=self.state,
+			services=self.services,
+			extra=extra or {},
+		)
 
-	def invoke(self, command_id: str) -> Any:
-		return self.commands.invoke(command_id)
+	def register_command(self, command: Command, *, replace: bool = False) -> None:
+		self.commands.register(command, replace=replace)
+
+	def invoke(
+		self,
+		command_id: str,
+		*,
+		extra: dict[str, Any] | None = None,
+		require_visible: bool = True,
+	) -> Any:
+		ctx = self._build_command_context(extra=extra)
+		return self.commands.execute(command_id, ctx, require_visible=require_visible)
+
+	def invoke_shortcut(self, shortcut: str, *, extra: dict[str, Any] | None = None) -> Any:
+		"""
+		Invoke a command by shortcut (canonical like "Ctrl+S" or Tk style like "<Control-s>").
+		"""
+		ctx = self._build_command_context(extra=extra)
+		return self.commands.execute_shortcut(shortcut, ctx)
 
 	def bind_key(self, keyseq: str, command_id: str, *, overwrite: bool = True) -> None:
+		"""
+		Store a key binding in the KeyMap (policy/config layer).
+		Use keymap.apply(self.commands) to bind into the registry when ready.
+		"""
 		self.keymap.bind(keyseq, command_id, overwrite=overwrite)
+
+	def apply_keymap(self, *, replace: bool = False) -> None:
+		"""
+		Bind all KeyMap entries into the CommandRegistry.
+		"""
+		self.keymap.apply(self.commands, replace=replace)
+
+	# -----------------------------------------------------------------------
+	# Key routing
+	# -----------------------------------------------------------------------
+
+	def _enable_key_routing(self) -> None:
+		"""
+		Route selected key bindings through the KeyMap/CommandRegistry.
+
+		Also bind on the "Menu" class so shortcuts work even when a menu
+		is currently posted/open (macOS in particular).
+		"""
+		if sys.platform == "darwin":
+			self._install_macos_quit_hook()
+
+		for keyseq, command_id in self.keymap.items():
+			handler = lambda _event, cid=command_id: self._invoke_bound_command(cid)
+
+			# Normal: works when focus is in regular widgets.
+			self.bind_all(keyseq, handler, add="+")
+
+			# Attempt to catch posted-menu paths too (best-effort).
+			try:
+				self.bind_class("Menu", keyseq, handler, add="+")
+			except tk.TclError:
+				pass
+
+	def _install_macos_quit_hook(self) -> None:
+		"""
+		Route macOS native Quit through our command spine (idempotent).
+
+		Key points:
+		- Safe to call multiple times (including after attaching a menubar).
+		- Avoids renaming tk::mac::Quit (rename conflicts are common).
+		- Installs/overwrites the Tcl proc body to call our Python callback.
+		"""
+		if sys.platform != "darwin":
+			return
+
+		# Always (re)bind the Python callback name in Tcl. On some builds,
+		# creating the same command twice errors; delete then create.
+		try:
+			self.deletecommand("pyezsh::mac_quit")
+		except Exception:
+			pass
+
+		self.createcommand("pyezsh::mac_quit", self._mac_quit)
+
+		# Install/overwrite the Tcl procs (best-effort, repeatable).
+		# We do NOT rename the existing procs; we simply replace their bodies.
+		for quit_cmd in ("tk::mac::Quit", "::tk::mac::Quit"):
+			try:
+				self.tk.eval(f"""
+					proc {quit_cmd} {{}} {{
+						pyezsh::mac_quit
+					}}
+				""")
+			except tk.TclError:
+				continue
+
+		self._mac_quit_hook_installed = True
+
+	def _mac_quit(self) -> None:
+		"""
+		macOS native Quit hook (Command-Q).
+
+		IMPORTANT:
+		Do NOT call destroy() directly here.
+		Route through the command spine to keep behavior consistent.
+		"""
+		self._invoke_bound_command("app.quit")
+
+	def _invoke_bound_command(self, command_id: str) -> str:
+		try:
+			self.invoke(command_id)
+			return "break"
+		except Exception:
+			# Don't raise into Tk event loop.
+			return ""
 
 	# -----------------------------------------------------------------------
 	# Component lifecycle management
@@ -300,3 +451,129 @@ class App(tk.Tk):
 
 	def __repr__(self) -> str:
 		return f"<{self.__class__.__name__} title={self.title_text!r}>"
+
+	# -----------------------------------------------------------------------
+	# Debug: key routing diagnostics
+	# -----------------------------------------------------------------------
+
+	def enable_key_debug(self) -> None:
+		"""
+		Enable verbose logging to understand what happens on the FIRST ⌘Q.
+
+		This is meant for one-off local debugging runs.
+		"""
+		self._install_debug_key_traps()
+		self._dump_quit_bindings()
+
+	def _install_debug_key_traps(self) -> None:
+		# Tcl callback to python print
+		try:
+			self.deletecommand("pyezsh::dbg")
+		except Exception:
+			pass
+		self.createcommand("pyezsh::dbg", lambda msg: print(msg))
+
+		# Tcl-level binds (all + Menu class)
+		try:
+			self.tk.eval(r'''
+				bind all <KeyPress> {
+					pyezsh::dbg [format "TCL KeyPress  keysym=%s keycode=%s state=%s char=%s widget=%s" %K %k %s %A %W]
+				}
+				bind all <KeyRelease> {
+					pyezsh::dbg [format "TCL KeyRelease keysym=%s keycode=%s state=%s char=%s widget=%s" %K %k %s %A %W]
+				}
+				bind Menu <KeyPress> {
+					pyezsh::dbg [format "TCL(Menu) KeyPress  keysym=%s keycode=%s state=%s char=%s widget=%s" %K %k %s %A %W]
+				}
+				bind Menu <KeyRelease> {
+					pyezsh::dbg [format "TCL(Menu) KeyRelease keysym=%s keycode=%s state=%s char=%s widget=%s" %K %k %s %A %W]
+				}
+			''')
+		except tk.TclError as e:
+			print(f"[dbg] Tcl bind install failed: {e}")
+
+		# Python-level binds
+		self.bind_all("<KeyPress>", self._py_dbg_keypress, add="+")
+		self.bind_all("<KeyRelease>", self._py_dbg_keyrelease, add="+")
+
+		# Debug-only wrapper for tk::mac::Quit that DOES NOT rename.
+		# We simply overwrite the proc body temporarily to log then call our callback.
+		if sys.platform == "darwin":
+			self._install_debug_macos_quit_proc()
+
+	def _py_dbg_keypress(self, event: tk.Event) -> None:
+		ks = getattr(event, "keysym", "")
+		kc = getattr(event, "keycode", "")
+		st = getattr(event, "state", "")
+		ch = getattr(event, "char", "")
+		w = getattr(event, "widget", None)
+		print(
+			f"PY  KeyPress  keysym={ks!r} keycode={kc!r} state={st!r} char={ch!r} "
+			f"widget={type(w).__name__ if w else None}"
+		)
+
+	def _py_dbg_keyrelease(self, event: tk.Event) -> None:
+		ks = getattr(event, "keysym", "")
+		kc = getattr(event, "keycode", "")
+		st = getattr(event, "state", "")
+		ch = getattr(event, "char", "")
+		w = getattr(event, "widget", None)
+		print(
+			f"PY  KeyRelease keysym={ks!r} keycode={kc!r} state={st!r} char={ch!r} "
+			f"widget={type(w).__name__ if w else None}"
+		)
+
+	def _install_debug_macos_quit_proc(self) -> None:
+		# python callback used by the debug Tcl proc
+		try:
+			self.deletecommand("pyezsh::dbg_mac_quit")
+		except Exception:
+			pass
+
+		def _dbg_quit() -> None:
+			print("PY  macOS Quit hook fired (debug proc)")
+			self._invoke_bound_command("app.quit")
+
+		self.createcommand("pyezsh::dbg_mac_quit", _dbg_quit)
+
+		for quit_cmd in ("tk::mac::Quit", "::tk::mac::Quit"):
+			try:
+				self.tk.eval(f"""
+					proc {quit_cmd} {{}} {{
+						pyezsh::dbg "TCL macOS Quit invoked via {quit_cmd}"
+						pyezsh::dbg_mac_quit
+					}}
+				""")
+			except tk.TclError:
+				continue
+
+	def _dump_quit_bindings(self) -> None:
+		seqs = ("<Command-q>", "<Command-Q>", "<Control-q>", "<Control-Q>")
+
+		print("---- BINDING DUMP (all / Menu class / toplevel) ----")
+		for s in seqs:
+			try:
+				a = self.bind_all(s) or ""
+			except Exception:
+				a = ""
+			try:
+				m = self.bind_class("Menu", s) or ""
+			except Exception:
+				m = ""
+			try:
+				t = self.bind(s) or ""
+			except Exception:
+				t = ""
+
+			print(f"{s}:")
+			print(f"  all : {a!r}")
+			print(f"  Menu: {m!r}")
+			print(f"  self: {t!r}")
+
+		print("---- TCL COMMAND PRESENCE ----")
+		for name in ("tk::mac::Quit", "::tk::mac::Quit"):
+			try:
+				exists = bool(int(self.tk.eval(f"llength [info commands {name}]")))
+			except Exception:
+				exists = False
+			print(f"{name} exists: {exists}")
