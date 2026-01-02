@@ -7,8 +7,8 @@
 # Notes:
 #	- App owns CommandRegistry and KeyMap.
 #	- Command execution uses CommandContext (app/state/services/extra).
-#	- UI key events can later route to:
-#		self.invoke_shortcut("Ctrl+S") or self.commands.execute_shortcut(...)
+#	- KeyRouter provides contextual key routing:
+#		focused component -> mode -> global keymap -> command execution
 #
 # ---------------------------------------------------------------------------
 # Revision History
@@ -28,6 +28,8 @@
 # 12/31/2025	Paul G. LeDuc				Make Quit routing single-path + safer Tcl hook
 # 12/31/2025	Paul G. LeDuc				Make macOS Quit hook idempotent + re-installable
 # 12/31/2025	Paul G. LeDuc				Remove quit-hook rename-debug + make debug hooks safe
+# 01/01/2026	Paul G. LeDuc				Adopt KeyRouter for contextual routing (keyseq -> command)
+# 01/01/2026	Paul G. LeDuc				Route macOS Quit through KeyRouter single path
 # ---------------------------------------------------------------------------
 
 from __future__ import annotations
@@ -47,6 +49,7 @@ from pyezsh.app.commands import Command, CommandContext, CommandRegistry
 from pyezsh.app.keys import KeyMap
 from pyezsh.app.default_commands import register_default_commands
 from pyezsh.app.default_keys import build_default_keymap
+from pyezsh.app.keyrouter import KeyRouter
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,6 +94,16 @@ class App(tk.Tk):
 		self._mac_quit_hook_installed: bool = False
 
 		# -------------------------------------------------------------------
+		# State/services placeholders (for CommandContext)
+		# -------------------------------------------------------------------
+
+		self.state: dict[str, Any] = {}
+		self.services: dict[str, Any] = {}
+
+		# Optional: a single place to track mode (KeyRouter can consult this later).
+		self.state.setdefault("mode", None)
+
+		# -------------------------------------------------------------------
 		# Command + keymap (invocation spine)
 		# -------------------------------------------------------------------
 
@@ -100,15 +113,20 @@ class App(tk.Tk):
 		register_default_commands(self.commands)
 		self.apply_keymap(replace=True)
 
+		# -------------------------------------------------------------------
+		# KeyRouter (contextual routing layer)
+		# -------------------------------------------------------------------
+
+		self.keyrouter = KeyRouter(
+			registry=self.commands,
+			global_keymap=self.keymap,
+		)
+
+		# Wire the focus provider now (safe: returns None if nothing focused).
+		self.keyrouter.set_focus_provider(self._get_focused_component_id)
+
 		# Route window-close through the command spine as well.
 		self.protocol("WM_DELETE_WINDOW", lambda: self.invoke("app.quit"))
-
-		# -------------------------------------------------------------------
-		# State/services placeholders (for CommandContext)
-		# -------------------------------------------------------------------
-
-		self.state: dict[str, Any] = {}
-		self.services: dict[str, Any] = {}
 
 		# -------------------------------------------------------------------
 		# Key routing (explicit Tk keyseq bindings + platform hooks)
@@ -191,12 +209,12 @@ class App(tk.Tk):
 		self.keymap.apply(self.commands, replace=replace)
 
 	# -----------------------------------------------------------------------
-	# Key routing
+	# Key routing (KeyRouter)
 	# -----------------------------------------------------------------------
 
 	def _enable_key_routing(self) -> None:
 		"""
-		Route selected key bindings through the KeyMap/CommandRegistry.
+		Bind explicit Tk key sequences and route them via KeyRouter.
 
 		Also bind on the "Menu" class so shortcuts work even when a menu
 		is currently posted/open (macOS in particular).
@@ -204,8 +222,9 @@ class App(tk.Tk):
 		if sys.platform == "darwin":
 			self._install_macos_quit_hook()
 
-		for keyseq, command_id in self.keymap.items():
-			handler = lambda _event, cid=command_id: self._invoke_bound_command(cid)
+		for keyseq, _command_id in self.keymap.items():
+			# Bind by keyseq, not command id, so routing can be contextual later.
+			handler = lambda _event, ks=keyseq: self._route_keyseq(ks)
 
 			# Normal: works when focus is in regular widgets.
 			self.bind_all(keyseq, handler, add="+")
@@ -216,9 +235,28 @@ class App(tk.Tk):
 			except tk.TclError:
 				pass
 
+	def _route_keyseq(self, keyseq: str) -> str:
+		"""
+		Route a keyseq through KeyRouter and return Tk event disposition.
+
+		Returns:
+			"break" if handled, "" otherwise.
+		"""
+		try:
+			# Keep router's idea of mode aligned with app state (single source of truth).
+			# (If you later want KeyRouter to consult state directly, remove this.)
+			self.keyrouter.set_mode(self.state.get("mode"))
+
+			ctx = self._build_command_context()
+			handled = self.keyrouter.route_keyseq(keyseq, ctx)
+			return "break" if handled else ""
+		except Exception:
+			# Don't raise into Tk event loop.
+			return ""
+
 	def _install_macos_quit_hook(self) -> None:
 		"""
-		Route macOS native Quit through our command spine (idempotent).
+		Route macOS native Quit through our KeyRouter (idempotent).
 
 		Key points:
 		- Safe to call multiple times (including after attaching a menubar).
@@ -228,8 +266,6 @@ class App(tk.Tk):
 		if sys.platform != "darwin":
 			return
 
-		# Always (re)bind the Python callback name in Tcl. On some builds,
-		# creating the same command twice errors; delete then create.
 		try:
 			self.deletecommand("pyezsh::mac_quit")
 		except Exception:
@@ -237,8 +273,6 @@ class App(tk.Tk):
 
 		self.createcommand("pyezsh::mac_quit", self._mac_quit)
 
-		# Install/overwrite the Tcl procs (best-effort, repeatable).
-		# We do NOT rename the existing procs; we simply replace their bodies.
 		for quit_cmd in ("tk::mac::Quit", "::tk::mac::Quit"):
 			try:
 				self.tk.eval(f"""
@@ -253,21 +287,46 @@ class App(tk.Tk):
 
 	def _mac_quit(self) -> None:
 		"""
-		macOS native Quit hook (Command-Q).
+		macOS native Quit hook.
 
 		IMPORTANT:
 		Do NOT call destroy() directly here.
-		Route through the command spine to keep behavior consistent.
+		Route through the same key routing path so behavior is consistent.
 		"""
-		self._invoke_bound_command("app.quit")
+		# Single path: go through KeyRouter using the actual bound key sequence.
+		# (This keeps macOS Quit aligned with your default_keys policy.)
+		self._route_keyseq("<Command-q>")
 
-	def _invoke_bound_command(self, command_id: str) -> str:
-		try:
-			self.invoke(command_id)
-			return "break"
-		except Exception:
-			# Don't raise into Tk event loop.
-			return ""
+	# -----------------------------------------------------------------------
+	# Focus/mode integration helpers (for contextual routing)
+	# -----------------------------------------------------------------------
+
+	def _get_focused_component_id(self) -> Optional[str]:
+		"""
+		Return the currently focused component id (if any).
+
+		Right now, this is conservative and returns None until components
+		explicitly participate in focus tracking.
+
+		Planned evolution:
+		- Components can call app.set_focused_component_id(component.id)
+		- Or implement a Focusable protocol so App can query focus state.
+		"""
+		return self.state.get("focused_component_id")
+
+	def set_focused_component_id(self, component_id: Optional[str]) -> None:
+		"""
+		Set the current focused component id used by KeyRouter.
+		Components/features should call this when focus changes.
+		"""
+		self.state["focused_component_id"] = component_id
+
+	def set_mode(self, mode: Optional[str]) -> None:
+		"""
+		Set the current app mode and keep KeyRouter aligned.
+		"""
+		self.state["mode"] = mode
+		self.keyrouter.set_mode(mode)
 
 	# -----------------------------------------------------------------------
 	# Component lifecycle management
@@ -497,7 +556,6 @@ class App(tk.Tk):
 		self.bind_all("<KeyRelease>", self._py_dbg_keyrelease, add="+")
 
 		# Debug-only wrapper for tk::mac::Quit that DOES NOT rename.
-		# We simply overwrite the proc body temporarily to log then call our callback.
 		if sys.platform == "darwin":
 			self._install_debug_macos_quit_proc()
 
@@ -524,7 +582,6 @@ class App(tk.Tk):
 		)
 
 	def _install_debug_macos_quit_proc(self) -> None:
-		# python callback used by the debug Tcl proc
 		try:
 			self.deletecommand("pyezsh::dbg_mac_quit")
 		except Exception:
@@ -532,7 +589,7 @@ class App(tk.Tk):
 
 		def _dbg_quit() -> None:
 			print("PY  macOS Quit hook fired (debug proc)")
-			self._invoke_bound_command("app.quit")
+			self._route_keyseq("<Command-q>")
 
 		self.createcommand("pyezsh::dbg_mac_quit", _dbg_quit)
 
