@@ -14,6 +14,7 @@
 # Date			Author						Change
 # ---------------------------------------------------------------------------
 # 01/01/2026	Paul G. LeDuc				Update exports for menu_defs split
+# 01/03/2026	Paul G. LeDuc				Update exports for StatusBar
 # ---------------------------------------------------------------------------
 
 from .component import Component
@@ -27,6 +28,7 @@ from .menu_defs import (
 	MenuCommand,
 	MenuSubmenu,
 )
+from .statusbar import StatusBar
 
 __all__ = [
 	"Component",
@@ -38,4 +40,5 @@ __all__ = [
 	"MenuSeparator",
 	"MenuCommand",
 	"MenuSubmenu",
+    "StatusBar",
 ]

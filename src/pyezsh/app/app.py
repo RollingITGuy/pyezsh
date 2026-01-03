@@ -34,12 +34,14 @@
 # 01/02/2026	Paul G. LeDuc				Public macOS quit hook API for MenuBar
 # 01/02/2026	Paul G. LeDuc				Added logging to application
 # 01/03/2026	Paul G. LeDuc				Added telemetry to application
+# 01/03/2026	Paul G. LeDuc				Added statusbar to application
 # ---------------------------------------------------------------------------
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Optional
+import logging
 import sys
 
 import tkinter as tk
@@ -59,9 +61,13 @@ from pyezsh.app.default_keys import build_default_keymap
 from pyezsh.app.keyrouter import KeyRouter
 
 # Declarative MenuBar wiring
-from pyezsh.ui.menubar import MenuBar
-from pyezsh.ui.menu_defs import MenuDef
+from pyezsh.ui import MenuBar
+from pyezsh.ui import MenuDef
 
+# StatusBar
+from pyezsh.ui import StatusBar
+
+from pyezsh.services import StatusService
 
 @dataclass(frozen=True, slots=True)
 class AppConfig:
@@ -100,7 +106,7 @@ class App(tk.Tk):
 		self.cfg = AppConfig(cfg)
 		init_logging(self.cfg)
 		self.log = get_app_logger()
-		self.log.debug("App init: logging configured")
+		#self.log.info("Welcome to pyezsh")
 
 		init_telemetry(self.cfg.options or {}, logger=self.log)
 		self.telemetry = get_telemetry()
@@ -178,7 +184,43 @@ class App(tk.Tk):
 				self._bind_mousewheel()
 		else:
 			self.root_frame = ttk.Frame(self)
-			self.root_frame.pack(fill="both", expand=True)
+
+		# -------------------------------------------------------------------
+		# StatusBar 
+		# -------------------------------------------------------------------
+
+		self.statusbar = StatusBar(height_rows=int(self.cfg.get("statusbar_rows", 1)))
+		self.statusbar.mount(self)
+		self.statusbar.layout()
+
+		# Mirror app logs into the StatusBar (middle section by default)
+		if bool(self.cfg.get("statusbar_log_enabled", True)):
+
+			self.statusbar.attach_logging(
+				logging.getLogger(),  # root logger
+				section=str(self.cfg.get("statusbar_log_section", "middle")),
+				level=int(self.cfg.get("statusbar_log_level", logging.INFO)),
+				fmt=str(self.cfg.get("statusbar_log_fmt", "%(levelname)s: %(message)s")),
+			)
+
+			#logging.getLogger().info("StatusBar log mirroring enabled")
+			self.log.info("Welcome to pyezsh")
+
+		self.statusbar.set_left("Ready")
+		self.statusbar.set_right(self.title_text)
+
+		# -------------------------------------------------------------------
+		# Services
+		# -------------------------------------------------------------------
+
+		self.services["status"] = StatusService(statusbar=self.statusbar)
+	
+
+		# -------------------------------------------------------------------
+		# Root frame layout (pack AFTER chrome)
+		# -------------------------------------------------------------------
+
+		self.root_frame.pack(fill="both", expand=True)
 
 	# -----------------------------------------------------------------------
 	# Command / keymap wrappers
@@ -335,6 +377,13 @@ class App(tk.Tk):
 			# Keep router's idea of mode aligned with app state (single source of truth).
 			# (If you later want KeyRouter to consult state directly, remove this.)
 			self.keyrouter.set_mode(self.state.get("mode"))
+
+			if hasattr(self, "statusbar"):
+				self.statusbar.set_left(f"Key: {keyseq}")
+
+			status = self.services.get("status")
+			if status is not None:
+				status.set_left(f"Key: {keyseq}")
 
 			ctx = self._build_command_context()
 			handled = self.keyrouter.route_keyseq(keyseq, ctx)
