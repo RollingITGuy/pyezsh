@@ -20,14 +20,16 @@
 # 01/01/2026	Paul G. LeDuc				Initial coding / release
 # 01/01/2026	Paul G. LeDuc				Align with KeyMap API (resolve_keyseq translation)
 # 01/01/2026	Paul G. LeDuc				Use Protocol for KeyMapLike (typing-safe decoupling)
+# 01/03/2026	Paul G. LeDuc				Add optional telemetry hooks
 # ---------------------------------------------------------------------------
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Callable, Optional, Protocol, runtime_checkable
+from typing import Callable, Optional, Protocol, Tuple, runtime_checkable
 
 from pyezsh.app.commands import CommandContext, CommandRegistry
+from pyezsh.core.telemetry import Telemetry
 
 
 FocusProvider = Callable[[], Optional[str]]
@@ -54,6 +56,9 @@ class KeyRouter:
 	"""
 	registry: CommandRegistry
 	global_keymap: KeyMapLike
+
+	# Optional telemetry
+	telemetry: Optional[Telemetry] = None
 
 	# Optional mode routing
 	mode_keymaps: dict[str, KeyMapLike] = field(default_factory=dict)
@@ -96,9 +101,42 @@ class KeyRouter:
 			- If the command is not found/enabled/visible, exceptions propagate.
 			  App-level Tk handlers should catch and decide whether to swallow.
 		"""
-		command_id = self.resolve_command_id(keyseq)
+		command_id, layer = self._resolve_command_id_with_layer(keyseq)
+
+		if self.telemetry:
+			self.telemetry.counter(
+				"keys.pressed",
+				1,
+				{
+					"keyseq": keyseq,
+					"mode": self._mode or "",
+					"focus": (self.focus_provider() if self.focus_provider else "") or "",
+				},
+			)
+
 		if not command_id:
+			if self.telemetry:
+				self.telemetry.event(
+					"key.unhandled",
+					{
+						"keyseq": keyseq,
+						"mode": self._mode or "",
+						"focus": (self.focus_provider() if self.focus_provider else "") or "",
+					},
+				)
 			return False
+
+		if self.telemetry:
+			self.telemetry.event(
+				"command.dispatched",
+				{
+					"command_id": command_id,
+					"keyseq": keyseq,
+					"layer": layer,
+					"mode": self._mode or "",
+					"focus": (self.focus_provider() if self.focus_provider else "") or "",
+				},
+			)
 
 		self.registry.execute(command_id, ctx, require_visible=True)
 		return True
@@ -115,6 +153,16 @@ class KeyRouter:
 		KeyMapLike is responsible for handling both raw matches and
 		Tk "<...>" -> canonical translation matches.
 		"""
+		command_id, _ = self._resolve_command_id_with_layer(keyseq)
+		return command_id
+
+	def _resolve_command_id_with_layer(self, keyseq: str) -> Tuple[Optional[str], str]:
+		"""
+		Internal resolver that returns (command_id, layer).
+
+		layer is one of:
+			"component" | "mode" | "global" | ""
+		"""
 		# 1) Focused component map
 		focus_id = self.focus_provider() if self.focus_provider else None
 		if focus_id:
@@ -122,7 +170,7 @@ class KeyRouter:
 			if km:
 				cid = km.resolve_keyseq(keyseq)
 				if cid:
-					return cid
+					return cid, "component"
 
 		# 2) Mode map
 		if self._mode:
@@ -130,7 +178,11 @@ class KeyRouter:
 			if km:
 				cid = km.resolve_keyseq(keyseq)
 				if cid:
-					return cid
+					return cid, "mode"
 
 		# 3) Global/app map
-		return self.global_keymap.resolve_keyseq(keyseq)
+		cid = self.global_keymap.resolve_keyseq(keyseq)
+		if cid:
+			return cid, "global"
+
+		return None, ""

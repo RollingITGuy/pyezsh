@@ -32,6 +32,8 @@
 # 01/01/2026	Paul G. LeDuc				Route macOS Quit through KeyRouter single path
 # 01/02/2026	Paul G. LeDuc				Add declarative MenuBar wiring (registry/context/invoker)
 # 01/02/2026	Paul G. LeDuc				Public macOS quit hook API for MenuBar
+# 01/02/2026	Paul G. LeDuc				Added logging to application
+# 01/03/2026	Paul G. LeDuc				Added telemetry to application
 # ---------------------------------------------------------------------------
 
 from __future__ import annotations
@@ -45,6 +47,9 @@ from tkinter import ttk
 
 # Keep ttkthemes import for later theme work
 import ttkthemes as ttk_themes
+
+from pyezsh.core import get_app_logger, init_logging
+from pyezsh.core import get_telemetry, init_telemetry
 
 from pyezsh.ui import Component
 from pyezsh.app.commands import Command, CommandContext, CommandRegistry
@@ -93,6 +98,14 @@ class App(tk.Tk):
 		super().__init__()
 
 		self.cfg = AppConfig(cfg)
+		init_logging(self.cfg)
+		self.log = get_app_logger()
+		self.log.debug("App init: logging configured")
+
+		init_telemetry(self.cfg.options or {}, logger=self.log)
+		self.telemetry = get_telemetry()
+		self.telemetry.event("app.init", {"title": title or "pyezsh"})
+
 		self.title_text = title or "pyezsh"
 		self.title(self.title_text)
 
@@ -126,6 +139,7 @@ class App(tk.Tk):
 		self.keyrouter = KeyRouter(
 			registry=self.commands,
 			global_keymap=self.keymap,
+			telemetry=self.telemetry,
 		)
 
 		# Wire the focus provider now (safe: returns None if nothing focused).
@@ -200,14 +214,36 @@ class App(tk.Tk):
 		extra: dict[str, Any] | None = None,
 		require_visible: bool = True,
 	) -> Any:
+		if hasattr(self, "telemetry") and self.telemetry:
+			self.telemetry.event(
+				"command.invoke",
+				{
+					"command_id": command_id,
+					"require_visible": require_visible,
+				},
+			)
+
 		ctx = self._build_command_context(extra=extra)
+
+		if hasattr(self, "telemetry") and self.telemetry:
+			with self.telemetry.timer("command.duration", {"command_id": command_id}):
+				return self.commands.execute(command_id, ctx, require_visible=require_visible)
+
 		return self.commands.execute(command_id, ctx, require_visible=require_visible)
 
 	def invoke_shortcut(self, shortcut: str, *, extra: dict[str, Any] | None = None) -> Any:
 		"""
 		Invoke a command by shortcut (canonical like "Ctrl+S" or Tk style like "<Control-s>").
 		"""
+		if hasattr(self, "telemetry") and self.telemetry:
+			self.telemetry.event("shortcut.invoke", {"shortcut": shortcut})
+
 		ctx = self._build_command_context(extra=extra)
+
+		if hasattr(self, "telemetry") and self.telemetry:
+			with self.telemetry.timer("shortcut.duration", {"shortcut": shortcut}):
+				return self.commands.execute_shortcut(shortcut, ctx)
+
 		return self.commands.execute_shortcut(shortcut, ctx)
 
 	def bind_key(self, keyseq: str, command_id: str, *, overwrite: bool = True) -> None:
@@ -303,7 +339,16 @@ class App(tk.Tk):
 			ctx = self._build_command_context()
 			handled = self.keyrouter.route_keyseq(keyseq, ctx)
 			return "break" if handled else ""
-		except Exception:
+		except Exception as e:
+			if hasattr(self, "telemetry") and self.telemetry:
+				self.telemetry.event(
+					"keyrouter.error",
+					{
+						"keyseq": keyseq,
+						"error": type(e).__name__,
+					},
+				)
+
 			# Don't raise into Tk event loop.
 			return ""
 
@@ -556,7 +601,14 @@ class App(tk.Tk):
 		"""
 		Run the Tk event loop.
 		"""
-		self.mainloop()
+		if hasattr(self, "telemetry") and self.telemetry:
+			self.telemetry.event("app.start", {"title": self.title_text})
+
+		try:
+			self.mainloop()
+		finally:
+			if hasattr(self, "telemetry") and self.telemetry:
+				self.telemetry.event("app.stop", {"title": self.title_text})
 
 	def __str__(self) -> str:
 		return f"{self.__class__.__name__}(title={self.title_text!r})"

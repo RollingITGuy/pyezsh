@@ -17,6 +17,7 @@
 # 01/01/2026	Paul G. LeDuc				Initial tests for MenuBar filtering + dropdown rendering
 # 01/01/2026	Paul G. LeDuc				Add submenu + recursive filtering tests (MenuDef expressiveness)
 # 01/01/2026	Paul G. LeDuc				Use pyezsh.ui public exports + loosen legacy item typing
+# 01/03/2026	Paul G. LeDuc				Add telemetry assertions for menu.select + parent_path wiring
 # ---------------------------------------------------------------------------
 
 from __future__ import annotations
@@ -27,6 +28,7 @@ from typing import Any, cast
 import tkinter as tk
 
 from pyezsh.app.commands import Command, CommandContext, CommandRegistry
+from pyezsh.core.telemetry import MemorySink, Telemetry
 from pyezsh.ui import (
 	MenuBar,
 	MenuDef,
@@ -138,6 +140,7 @@ def test_filter_drops_menu_when_only_reserved_items_present():
 	assert [m.label for m in out] == ["Other"]
 	assert out[0].items == (MenuCommand("x"),)
 
+
 def test_filter_removes_reserved_items_inside_submenus():
 	mb = MenuBar(
 		menus=(
@@ -231,7 +234,7 @@ def test_populate_dropdown_renders_commands_and_separators_and_state():
 		"missing.command",	# should be ignored
 	)
 
-	mb._populate_dropdown(cast(tk.Menu, fake), items, _ctx(), registry)
+	mb._populate_dropdown(cast(tk.Menu, fake), items, _ctx(), registry, parent_path=("File",))
 
 	# Expect: Open, sep, Disabled (disabled), Close
 	kinds = [e.kind for e in fake.entries]
@@ -268,7 +271,7 @@ def test_populate_dropdown_supports_submenus():
 		),
 	)
 
-	mb._populate_dropdown(cast(tk.Menu, root), items, _ctx(), registry)
+	mb._populate_dropdown(cast(tk.Menu, root), items, _ctx(), registry, parent_path=("Root",))
 
 	# One cascade at top level
 	assert len(root.entries) == 1
@@ -281,6 +284,35 @@ def test_populate_dropdown_no_registry_no_output():
 	mb = MenuBar()
 	fake = FakeMenu()
 
-	mb._populate_dropdown(cast(tk.Menu, fake), ("x", None, "y"), _ctx(), None)
+	mb._populate_dropdown(cast(tk.Menu, fake), ("x", None, "y"), _ctx(), None, parent_path=("X",))
 
 	assert fake.entries == []
+
+
+def test_menu_select_emits_telemetry_event_with_menu_path():
+	registry = CommandRegistry()
+	registry.register(Command(id="file.open", label="Open", handler=lambda ctx: None))
+
+	mb = MenuBar()
+	sink = MemorySink()
+	mb._telemetry = Telemetry(enabled=True, sink=sink)
+
+	root = FakeMenu()
+	items = ("file.open",)
+
+	mb._populate_dropdown(cast(tk.Menu, root), items, _ctx(), registry, parent_path=("File",))
+
+	assert len(root.entries) == 1
+	assert root.entries[0].kind == "cmd"
+
+	cb = root.entries[0].attrs.get("command")
+	assert callable(cb)
+
+	# Simulate user selecting the menu item
+	cb()
+
+	assert any(e.name == "menu.select" for e in sink.events)
+	ev = next(e for e in sink.events if e.name == "menu.select")
+
+	assert ev.attrs.get("command_id") == "file.open"
+	assert ev.attrs.get("menu_path") == "File > Open"

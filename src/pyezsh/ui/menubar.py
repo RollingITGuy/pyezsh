@@ -31,6 +31,7 @@
 # 01/01/2026	Paul G. LeDuc				Make submenu rendering test-friendly (FakeMenu support)
 # 01/02/2026	Paul G. LeDuc				Add fully-declarative dependency injection (registry/context/invoker)
 # 01/02/2026	Paul G. LeDuc				Prefer public install_macos_quit_hook if present
+# 01/03/2026	Paul G. LeDuc				Add minimal telemetry for menu selection
 # ---------------------------------------------------------------------------
 
 from __future__ import annotations
@@ -41,6 +42,7 @@ import sys
 import tkinter as tk
 
 from pyezsh.app.commands import CommandContext, CommandRegistry
+from pyezsh.core.telemetry import Telemetry
 from pyezsh.ui import Component
 from pyezsh.ui.menu_defs import (
 	MenuDef,
@@ -88,6 +90,9 @@ class MenuBar(Component):
 		self._context_provider = context_provider
 		self._invoker = invoker
 
+		# Optional telemetry (injected or discovered from app)
+		self._telemetry: Optional[Telemetry] = None
+
 		self._app: tk.Misc | None = None
 		self._menubar: tk.Menu | None = None
 
@@ -97,6 +102,9 @@ class MenuBar(Component):
 		"""
 		app = parent.winfo_toplevel()
 		self._app = app
+
+		# Best-effort telemetry discovery from app (keeps MenuBar declarative).
+		self._telemetry = getattr(app, "telemetry", None)
 
 		menubar = tk.Menu(app, tearoff=0)
 		self._menubar = menubar
@@ -134,6 +142,7 @@ class MenuBar(Component):
 
 		self._menubar = None
 		self._app = None
+		self._telemetry = None
 
 	# -----------------------------------------------------------------------
 	# Declarative surface
@@ -203,7 +212,7 @@ class MenuBar(Component):
 		menus = self._get_effective_menus(is_mac=is_mac)
 		for m in menus:
 			dropdown = tk.Menu(self._menubar, tearoff=0)
-			self._populate_dropdown(dropdown, m.items, ctx, registry)
+			self._populate_dropdown(dropdown, m.items, ctx, registry, parent_path=(m.label,))
 			self._menubar.add_cascade(label=m.label, menu=dropdown)
 
 	def _add_apple_menu(self, ctx: CommandContext, registry: CommandRegistry | None) -> None:
@@ -237,7 +246,7 @@ class MenuBar(Component):
 				items.append(None)
 			items.append("app.quit")
 
-		self._populate_dropdown(apple, tuple(items), ctx, registry)
+		self._populate_dropdown(apple, tuple(items), ctx, registry, parent_path=("Apple",))
 
 		# Important: do NOT supply a label for the Apple menu.
 		self._menubar.add_cascade(menu=apple)
@@ -289,6 +298,8 @@ class MenuBar(Component):
 		items: tuple[MenuItemLike, ...],
 		ctx: CommandContext,
 		registry: CommandRegistry | None,
+		*,
+		parent_path: tuple[str, ...] = (),
 	) -> None:
 		if registry is None:
 			return
@@ -308,7 +319,13 @@ class MenuBar(Component):
 				else:
 					submenu = dropdown.__class__()
 
-				self._populate_dropdown(submenu, item.items, ctx, registry)
+				self._populate_dropdown(
+					submenu,
+					item.items,
+					ctx,
+					registry,
+					parent_path=parent_path + (item.label,),
+				)
 				dropdown.add_cascade(label=item.label, menu=submenu)
 				continue
 
@@ -338,11 +355,13 @@ class MenuBar(Component):
 			label = item.label if item.label is not None else cmd.label
 			accel = item.accelerator if item.accelerator is not None else (cmd.shortcut or "")
 
+			menu_path = " > ".join(parent_path + (label,))
+
 			dropdown.add_command(
 				label=label,
 				accelerator=accel,
 				state=("normal" if enabled else "disabled"),
-				command=lambda cid=cmd.id: self._invoke(cid),
+				command=lambda cid=cmd.id, mp=menu_path: self._invoke(cid, menu_path=mp),
 			)
 
 	def _command_exists(self, registry: CommandRegistry | None, command_id: str) -> bool:
@@ -353,7 +372,13 @@ class MenuBar(Component):
 		except Exception:
 			return False
 
-	def _invoke(self, command_id: str) -> None:
+	def _invoke(self, command_id: str, *, menu_path: str | None = None) -> None:
+		if self._telemetry:
+			attrs: dict[str, Any] = {"command_id": command_id}
+			if menu_path:
+				attrs["menu_path"] = menu_path
+			self._telemetry.event("menu.select", attrs)
+
 		# Fully-declarative path
 		if self._invoker is not None:
 			self._invoker(command_id)
