@@ -13,6 +13,8 @@
 #	- When auto_app_menu=True on macOS, About/Preferences/Quit are filtered from explicit menus
 #	  (including submenus) to avoid duplication while keeping menus=(...) cross-platform.
 #	- Menu item definitions live in pyezsh.ui.menu_defs (typed items + legacy compatibility).
+#	- Fully-declarative mode:
+#		Pass registry/context_provider/invoker so MenuBar does not introspect the app.
 #
 # ---------------------------------------------------------------------------
 # Revision History
@@ -27,6 +29,8 @@
 # 01/01/2026	Paul G. LeDuc				Add Preferences to Apple menu + filter from explicit menus on macOS
 # 01/01/2026	Paul G. LeDuc				Add typed menu items + submenu support (menu_defs.py)
 # 01/01/2026	Paul G. LeDuc				Make submenu rendering test-friendly (FakeMenu support)
+# 01/02/2026	Paul G. LeDuc				Add fully-declarative dependency injection (registry/context/invoker)
+# 01/02/2026	Paul G. LeDuc				Prefer public install_macos_quit_hook if present
 # ---------------------------------------------------------------------------
 
 from __future__ import annotations
@@ -53,7 +57,14 @@ class MenuBar(Component):
 	MenuBar
 
 	Tk menubar that renders dropdown menus from command ids.
-	On macOS, ensures a native Apple menu exists as the first cascade.
+
+	Declarative inputs:
+		- menus: Menu model to render
+		- registry: CommandRegistry to resolve and execute command ids
+		- context_provider: Callable returning a CommandContext
+		- invoker: Optional callable to invoke a command id
+
+	On macOS, ensures a native Apple menu exists as the first cascade when auto_app_menu=True.
 	"""
 
 	def __init__(
@@ -63,10 +74,19 @@ class MenuBar(Component):
 		name: str | None = "MenuBar",
 		menus: tuple[MenuDef, ...] = (),
 		auto_app_menu: bool = True,
+		registry: CommandRegistry | None = None,
+		context_provider: Callable[[], CommandContext] | None = None,
+		invoker: Callable[[str], None] | None = None,
 	) -> None:
 		super().__init__(id=id, name=name)
 		self._menus = menus
 		self._auto_app_menu = auto_app_menu
+
+		# Fully-declarative dependencies (preferred).
+		# If not provided, we fall back to legacy app introspection for compatibility.
+		self._registry = registry
+		self._context_provider = context_provider
+		self._invoker = invoker
 
 		self._app: tk.Misc | None = None
 		self._menubar: tk.Menu | None = None
@@ -86,7 +106,9 @@ class MenuBar(Component):
 		# macOS: attaching a menu can reset native Quit handling in some builds.
 		# Re-install after attaching (your App method is idempotent).
 		if sys.platform == "darwin":
-			hook = getattr(app, "_install_macos_quit_hook", None)
+			hook = getattr(app, "install_macos_quit_hook", None)
+			if not callable(hook):
+				hook = getattr(app, "_install_macos_quit_hook", None)
 			if callable(hook):
 				try:
 					hook()
@@ -114,10 +136,29 @@ class MenuBar(Component):
 		self._app = None
 
 	# -----------------------------------------------------------------------
+	# Declarative surface
+	# -----------------------------------------------------------------------
+
+	def normalized_menus(self, *, platform: str | None = None) -> tuple[MenuDef, ...]:
+		"""
+		Return the menu model that will be rendered after platform normalization.
+
+		This is intentionally test-friendly (no Tk required).
+		"""
+		plat = platform if platform is not None else sys.platform
+		is_mac = (plat == "darwin")
+		return self._get_effective_menus(is_mac=is_mac)
+
+	# -----------------------------------------------------------------------
 	# Internals
 	# -----------------------------------------------------------------------
 
 	def _ctx(self) -> CommandContext:
+		# Fully-declarative path
+		if self._context_provider is not None:
+			return self._context_provider()
+
+		# Back-compat path (legacy: discover from the Tk app)
 		if self._app is None:
 			raise RuntimeError("MenuBar is not mounted")
 
@@ -132,8 +173,13 @@ class MenuBar(Component):
 
 	def _get_registry(self) -> CommandRegistry | None:
 		"""
-		Return the CommandRegistry from the app (if present), with correct typing.
+		Return the CommandRegistry to use.
+
+		Prefer injected registry (fully-declarative). Fall back to app.commands (back-compat).
 		"""
+		if self._registry is not None:
+			return self._registry
+
 		if self._app is None:
 			return None
 		reg = getattr(self._app, "commands", None)
@@ -308,6 +354,12 @@ class MenuBar(Component):
 			return False
 
 	def _invoke(self, command_id: str) -> None:
+		# Fully-declarative path
+		if self._invoker is not None:
+			self._invoker(command_id)
+			return
+
+		# Back-compat path (legacy: invoke on the Tk app if present)
 		if self._app is None:
 			return
 

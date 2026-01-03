@@ -30,6 +30,8 @@
 # 12/31/2025	Paul G. LeDuc				Remove quit-hook rename-debug + make debug hooks safe
 # 01/01/2026	Paul G. LeDuc				Adopt KeyRouter for contextual routing (keyseq -> command)
 # 01/01/2026	Paul G. LeDuc				Route macOS Quit through KeyRouter single path
+# 01/02/2026	Paul G. LeDuc				Add declarative MenuBar wiring (registry/context/invoker)
+# 01/02/2026	Paul G. LeDuc				Public macOS quit hook API for MenuBar
 # ---------------------------------------------------------------------------
 
 from __future__ import annotations
@@ -50,6 +52,10 @@ from pyezsh.app.keys import KeyMap
 from pyezsh.app.default_commands import register_default_commands
 from pyezsh.app.default_keys import build_default_keymap
 from pyezsh.app.keyrouter import KeyRouter
+
+# Declarative MenuBar wiring
+from pyezsh.ui.menubar import MenuBar
+from pyezsh.ui.menu_defs import MenuDef
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,7 +139,7 @@ class App(tk.Tk):
 		# -------------------------------------------------------------------
 
 		# Install key routing + macOS quit hook early.
-		# If/when a menubar is attached, MenuBar can call _install_macos_quit_hook()
+		# If/when a menubar is attached, MenuBar can call install_macos_quit_hook()
 		# again safely (it is idempotent).
 		self._enable_key_routing()
 
@@ -175,6 +181,15 @@ class App(tk.Tk):
 			extra=extra or {},
 		)
 
+	def build_command_context(self, *, extra: dict[str, Any] | None = None) -> CommandContext:
+		"""
+		Public wrapper for building CommandContext.
+
+		This exists so declarative components (e.g., MenuBar) can depend on a stable
+		public API rather than calling a private helper.
+		"""
+		return self._build_command_context(extra=extra)
+
 	def register_command(self, command: Command, *, replace: bool = False) -> None:
 		self.commands.register(command, replace=replace)
 
@@ -207,6 +222,44 @@ class App(tk.Tk):
 		Bind all KeyMap entries into the CommandRegistry.
 		"""
 		self.keymap.apply(self.commands, replace=replace)
+
+	# -----------------------------------------------------------------------
+	# Declarative component helpers (MenuBar)
+	# -----------------------------------------------------------------------
+
+	def create_menubar(
+		self,
+		*,
+		menus: tuple[MenuDef, ...] = (),
+		auto_app_menu: bool = True,
+		id: str | None = None,
+		name: str | None = "MenuBar",
+	) -> MenuBar:
+		"""
+		Create a fully-declarative MenuBar wired to this App's command spine.
+
+		The MenuBar will NOT need to introspect the App for:
+			- registry
+			- context construction
+			- invocation
+		"""
+		return MenuBar(
+			id=id,
+			name=name,
+			menus=menus,
+			auto_app_menu=auto_app_menu,
+			registry=self.commands,
+			context_provider=self.build_command_context,
+			invoker=lambda cid: self.invoke(cid),
+		)
+
+	def install_macos_quit_hook(self) -> None:
+		"""
+		Public wrapper for installing the macOS quit hook (idempotent).
+
+		Declarative components may call this after attaching a menubar if needed.
+		"""
+		self._install_macos_quit_hook()
 
 	# -----------------------------------------------------------------------
 	# Key routing (KeyRouter)
