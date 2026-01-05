@@ -101,6 +101,16 @@ class KeyRouter:
 			- If the command is not found/enabled/visible, exceptions propagate.
 			  App-level Tk handlers should catch and decide whether to swallow.
 		"""
+		# Status hook (optional): record last key press even if unhandled.
+		status = None
+		try:
+			status = ctx.services.get("status") if getattr(ctx, "services", None) else None
+		except Exception:
+			status = None
+
+		if status and hasattr(status, "set_last_keyseq"):
+			status.set_last_keyseq(keyseq)
+
 		command_id, layer = self._resolve_command_id_with_layer(keyseq)
 
 		if self.telemetry:
@@ -125,6 +135,10 @@ class KeyRouter:
 					},
 				)
 			return False
+
+		# Status hook (optional): record last dispatched command id.
+		if status and hasattr(status, "set_last_command_id"):
+			status.set_last_command_id(command_id)
 
 		if self.telemetry:
 			self.telemetry.event(

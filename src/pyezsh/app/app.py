@@ -177,50 +177,59 @@ class App(tk.Tk):
 		# Apply geometry (with screen-size guard)
 		self._apply_geometry(width, height)
 
+		# Single container for all UI (prevents root-level pack conflicts)
+		self.app_frame = ttk.Frame(self)
+		self.app_frame.pack(fill="both", expand=True)
+
 		# Create a single root container for all UI
 		if bool(self.cfg.get("scrollable", False)):
 			self._build_scrollable_root()
 			if bool(self.cfg.get("mousewheel", True)):
 				self._bind_mousewheel()
 		else:
-			self.root_frame = ttk.Frame(self)
+			self.root_frame = ttk.Frame(self.app_frame)
+
+		# -------------------------------------------------------------------
+		# Root frame layout
+		# -------------------------------------------------------------------
+
+		# NOTE: pack root_frame AFTER statusbar so the statusbar always wins the bottom edge.
+		# In scrollable mode, _build_scrollable_root() already packed the container/canvas.
 
 		# -------------------------------------------------------------------
 		# StatusBar 
 		# -------------------------------------------------------------------
 
-		self.statusbar = StatusBar(height_rows=int(self.cfg.get("statusbar_rows", 1)))
-		self.statusbar.mount(self)
+		self.statusbar = StatusBar(height_rows=int(self.cfg.get("statusbar_rows", 1)), debug=False)
+		self.statusbar.mount(self.app_frame)
 		self.statusbar.layout()
+
+		# Now pack root_frame (non-scrollable mode)
+		if not bool(self.cfg.get("scrollable", False)):
+			self.root_frame.pack(fill="both", expand=True)		
 
 		# Mirror app logs into the StatusBar (middle section by default)
 		if bool(self.cfg.get("statusbar_log_enabled", True)):
 
 			self.statusbar.attach_logging(
-				logging.getLogger(),  # root logger
+				#logging.getLogger(),  # root logger
+				self.log,
 				section=str(self.cfg.get("statusbar_log_section", "middle")),
 				level=int(self.cfg.get("statusbar_log_level", logging.INFO)),
 				fmt=str(self.cfg.get("statusbar_log_fmt", "%(levelname)s: %(message)s")),
 			)
 
-			#logging.getLogger().info("StatusBar log mirroring enabled")
-			self.log.info("Welcome to pyezsh")
-
-		self.statusbar.set_left("Ready")
-		self.statusbar.set_right(self.title_text)
-
+			self.log.info("Welcome to pyezsh!")
+			
 		# -------------------------------------------------------------------
 		# Services
 		# -------------------------------------------------------------------
 
-		self.services["status"] = StatusService(statusbar=self.statusbar)
-	
-
-		# -------------------------------------------------------------------
-		# Root frame layout (pack AFTER chrome)
-		# -------------------------------------------------------------------
-
-		self.root_frame.pack(fill="both", expand=True)
+		status = StatusService()
+		self.services["status"] = status	
+		status.attach_sink(self.statusbar)
+		status.set_left("Ready")
+		status.set_right(self.title_text)
 
 	# -----------------------------------------------------------------------
 	# Command / keymap wrappers
@@ -378,13 +387,6 @@ class App(tk.Tk):
 			# (If you later want KeyRouter to consult state directly, remove this.)
 			self.keyrouter.set_mode(self.state.get("mode"))
 
-			if hasattr(self, "statusbar"):
-				self.statusbar.set_left(f"Key: {keyseq}")
-
-			status = self.services.get("status")
-			if status is not None:
-				status.set_left(f"Key: {keyseq}")
-
 			ctx = self._build_command_context()
 			handled = self.keyrouter.route_keyseq(keyseq, ctx)
 			return "break" if handled else ""
@@ -448,7 +450,7 @@ class App(tk.Tk):
 	# Focus/mode integration helpers (for contextual routing)
 	# -----------------------------------------------------------------------
 
-	def _get_focused_component_id(self) -> Optional[str]:
+	def _get_focused_component_id(self) -> Optional[str | None]:
 		"""
 		Return the currently focused component id (if any).
 
@@ -461,14 +463,14 @@ class App(tk.Tk):
 		"""
 		return self.state.get("focused_component_id")
 
-	def set_focused_component_id(self, component_id: Optional[str]) -> None:
+	def set_focused_component_id(self, component_id: Optional[str | None]) -> None:
 		"""
 		Set the current focused component id used by KeyRouter.
 		Components/features should call this when focus changes.
 		"""
 		self.state["focused_component_id"] = component_id
 
-	def set_mode(self, mode: Optional[str]) -> None:
+	def set_mode(self, mode: Optional[str | None]) -> None:
 		"""
 		Set the current app mode and keep KeyRouter aligned.
 		"""
@@ -605,9 +607,10 @@ class App(tk.Tk):
 		"""
 		Build a scrollable root container using Canvas + inner Frame + Scrollbar.
 		"""
-		container = ttk.Frame(self)
+		#container = ttk.Frame(self)
+		#container.pack(fill="both", expand=True)
+		container = ttk.Frame(self.app_frame)
 		container.pack(fill="both", expand=True)
-
 		self.canvas = tk.Canvas(container, highlightthickness=0)
 		self.v_scroll = ttk.Scrollbar(
 			container,
