@@ -35,6 +35,7 @@
 # 01/02/2026	Paul G. LeDuc				Added logging to application
 # 01/03/2026	Paul G. LeDuc				Added telemetry to application
 # 01/03/2026	Paul G. LeDuc				Added statusbar to application
+# 01/05/2026	Paul G. LeDuc				Added MainLayout to application
 # ---------------------------------------------------------------------------
 
 from __future__ import annotations
@@ -68,6 +69,9 @@ from pyezsh.ui import MenuDef
 from pyezsh.ui import StatusBar
 
 from pyezsh.services import StatusService
+
+from pyezsh.ui import MainLayout
+
 
 @dataclass(frozen=True, slots=True)
 class AppConfig:
@@ -195,6 +199,22 @@ class App(tk.Tk):
 
 		# NOTE: pack root_frame AFTER statusbar so the statusbar always wins the bottom edge.
 		# In scrollable mode, _build_scrollable_root() already packed the container/canvas.
+
+		# Build the MVP main layout inside root_frame
+		self.main_layout = MainLayout(
+			sidebar_width=int(self.cfg.get("sidebar_width", 240)),
+			right_width=int(self.cfg.get("props_width", 320)),
+			splitter_width=int(self.cfg.get("splitter_width", 2)),
+			splitter_color=str(self.cfg.get("splitter_color", "#C8C8C8")),
+		)
+		self.main_layout.mount(self.root_frame)
+
+		# MVP placeholders (temporary)
+		ttk.Label(self.main_layout.sidebar_frame, text="Sidebar").pack(anchor="nw", padx=8, pady=8)
+		ttk.Label(self.main_layout.content_frame, text="Content").pack(anchor="nw", padx=8, pady=8)
+		ttk.Label(self.main_layout.props_frame, text="Properties").pack(anchor="nw", padx=8, pady=8)
+		ttk.Label(self.main_layout.telemetry_frame, text="Telemetry").pack(anchor="nw", padx=8, pady=8)
+
 
 		# -------------------------------------------------------------------
 		# StatusBar 
