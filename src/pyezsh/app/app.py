@@ -55,7 +55,7 @@ import ttkthemes as ttk_themes
 from pyezsh.core import get_app_logger, init_logging
 from pyezsh.core import get_telemetry, init_telemetry
 
-from pyezsh.ui import Component
+from pyezsh.ui.component import Component
 from pyezsh.app.commands import Command, CommandContext, CommandRegistry
 from pyezsh.app.keys import KeyMap
 from pyezsh.app.default_commands import register_default_commands
@@ -63,17 +63,19 @@ from pyezsh.app.default_keys import build_default_keymap
 from pyezsh.app.keyrouter import KeyRouter
 
 # Declarative MenuBar wiring
-from pyezsh.ui import MenuBar
-from pyezsh.ui import MenuDef
+from pyezsh.ui.menubar import MenuBar
+from pyezsh.ui.menu_defs import MenuDef, MenuCommand, MenuSubmenu, SEP
 
 # StatusBar
-from pyezsh.ui import StatusBar
-from pyezsh.ui import SidebarTreeView
-from pyezsh.ui import ContentViewer
+from pyezsh.ui.statusbar import StatusBar
+from pyezsh.ui.sidebar_treeview import SidebarTreeView
+from pyezsh.ui.content_viewer import ContentViewer
 
 from pyezsh.services import StatusService
 
-from pyezsh.ui import MainLayout
+from pyezsh.ui.mainlayout import MainLayout
+
+from pyezsh.ui.dialogs import show_not_implemented
 
 
 @dataclass(frozen=True, slots=True)
@@ -144,6 +146,8 @@ class App(tk.Tk):
 
 		register_default_commands(self.commands)
 		self.apply_keymap(replace=True)
+		self._register_dummy_menu_commands()
+
 
 		# -------------------------------------------------------------------
 		# KeyRouter (contextual routing layer)
@@ -401,6 +405,45 @@ class App(tk.Tk):
 	# Declarative component helpers (MenuBar)
 	# -----------------------------------------------------------------------
 
+	def _ni_callable(self, feature: str): # future enhancement
+		"""
+		Convenience helper: invoke app.not_implemented with a friendly feature name.
+		Returns a callable suitable for MenuBar item handlers (if supported).
+		"""
+		return lambda: self.invoke("app.not_implemented", extra={"feature": feature})
+
+	# -----------------------------------------------------------------------
+	# FUTURE ENHANCEMENT (Post-MVP)
+	# -----------------------------------------------------------------------
+	# TODO(menu-invoker-extra):
+	#	MenuBar currently invokes commands by command_id only:
+	#
+	#		invoker=lambda cid: self.invoke(cid)
+	#
+	#	This prevents menu items from passing per-item context (ctx.extra),
+	#	which would allow generic commands such as:
+	#
+	#		"app.not_implemented"
+	#
+	#	to receive feature-specific data like:
+	#
+	#		{"feature": "File → Open"}
+	#
+	#	Proposed enhancement:
+	#	- Extend MenuDef item schema to optionally include `extra`
+	#	- Update MenuBar to call:
+	#
+	#		invoker(cid, extra=...)
+	#
+	#	- Update App.create_menubar() to wire:
+	#
+	#		invoker=lambda cid, extra=None: self.invoke(cid, extra=extra)
+	#
+	#	This will allow menu definitions to reuse a single generic command
+	#	with per-item metadata, reducing the need for wrapper commands.
+	#
+	#	Deferred intentionally to keep MVP MenuBar simple and stable.
+
 	def create_menubar(
 		self,
 		*,
@@ -426,6 +469,140 @@ class App(tk.Tk):
 			context_provider=self.build_command_context,
 			invoker=lambda cid: self.invoke(cid),
 		)
+	
+	# -----------------------------------------------------------------------
+	# MVP: dummy menu commands
+	# -----------------------------------------------------------------------
+
+	def _register_dummy_menu_commands(self) -> None:
+		"""
+		Register MVP dummy menu commands.
+
+		These exist because MenuBar currently invokes by command id only
+		(no per-item ctx.extra yet).
+		"""
+		#from pyezsh.app.commands import Command, CommandContext
+		#from pyezsh.ui.dialogs import show_not_implemented
+
+		def _ni(feature: str):
+			def _handler(ctx: CommandContext) -> None:
+				show_not_implemented(
+					feature,
+					parent=ctx.app,
+					logger=getattr(ctx.app, "log", None),
+					telemetry=getattr(ctx.app, "telemetry", None),
+				)
+			return _handler
+
+		# File
+		self.commands.register(Command(id="mvp.file.new", label="New", handler=_ni("File → New")), replace=True)
+		self.commands.register(Command(id="mvp.file.open", label="Open…", handler=_ni("File → Open…")), replace=True)
+		self.commands.register(Command(id="mvp.file.save", label="Save", handler=_ni("File → Save")), replace=True)
+		self.commands.register(Command(id="mvp.file.save_as", label="Save As…", handler=_ni("File → Save As…")), replace=True)
+
+		# File → Open Recent submenu
+		self.commands.register(Command(id="mvp.file.recent.project_a", label="project_a.py", handler=_ni("File → Open Recent → project_a.py")), replace=True)
+		self.commands.register(Command(id="mvp.file.recent.notes", label="notes.txt", handler=_ni("File → Open Recent → notes.txt")), replace=True)
+		self.commands.register(Command(id="mvp.file.recent.clear", label="Clear Menu", handler=_ni("File → Open Recent → Clear Menu")), replace=True)
+
+		# Edit
+		self.commands.register(Command(id="mvp.edit.cut", label="Cut", handler=_ni("Edit → Cut")), replace=True)
+		self.commands.register(Command(id="mvp.edit.copy", label="Copy", handler=_ni("Edit → Copy")), replace=True)
+		self.commands.register(Command(id="mvp.edit.paste", label="Paste", handler=_ni("Edit → Paste")), replace=True)
+		self.commands.register(Command(id="mvp.edit.find", label="Find…", handler=_ni("Edit → Find…")), replace=True)
+
+		# View
+		self.commands.register(Command(id="mvp.view.toggle_sidebar", label="Toggle Sidebar", handler=_ni("View → Toggle Sidebar")), replace=True)
+		self.commands.register(Command(id="mvp.view.toggle_properties", label="Toggle Properties", handler=_ni("View → Toggle Properties")), replace=True)
+		self.commands.register(Command(id="mvp.view.toggle_telemetry", label="Toggle Telemetry", handler=_ni("View → Toggle Telemetry")), replace=True)
+
+		# Help
+		self.commands.register(Command(id="mvp.help.docs", label="Documentation", handler=_ni("Help → Documentation")), replace=True)
+		self.commands.register(Command(id="mvp.help.shortcuts", label="Keyboard Shortcuts", handler=_ni("Help → Keyboard Shortcuts")), replace=True)
+
+		# -------------------------------------------------------------------
+		# MenuBar (Dummy menus for MVP)
+		# -------------------------------------------------------------------
+
+		menus = (
+			MenuDef(
+				label="File",
+				items=(
+					"mvp.file.new",
+					"mvp.file.open",
+					MenuSubmenu(
+						label="Open Recent",
+						items=(
+							"mvp.file.recent.project_a",
+							"mvp.file.recent.notes",
+							SEP,
+							"mvp.file.recent.clear",
+						),
+					),
+					SEP,
+					"mvp.file.save",
+					"mvp.file.save_as",
+				),
+			),
+			MenuDef(
+				label="Edit",
+				items=(
+					"mvp.edit.cut",
+					"mvp.edit.copy",
+					"mvp.edit.paste",
+					SEP,
+					"mvp.edit.find",
+				),
+			),
+			MenuDef(
+				label="View",
+				items=(
+					"mvp.view.toggle_sidebar",
+					"mvp.view.toggle_properties",
+					"mvp.view.toggle_telemetry",
+				),
+			),
+			MenuDef(
+				label="Help",
+				items=(
+					"mvp.help.docs",
+					"mvp.help.shortcuts",
+					SEP,
+					# On macOS this may appear in Apple menu too (depending on your MenuBar filtering).
+					"app.about",
+				),
+			),
+		)
+
+		self.menubar = self.create_menubar(menus=menus, auto_app_menu=True)
+		self.menubar.mount(self)
+		self.menubar.layout()
+		self._dump_menus()
+
+	def _dump_menus(self) -> None:
+		try:
+			m = self.cget("menu")
+			self.log.info("root.cget('menu') = %r", m)
+			if not m:
+				self.log.info("No menu set on root.")
+				return
+
+			menu = self.nametowidget(m)
+			end = menu.index("end")
+			self.log.info("menubar end index = %r", end)
+			if end is None:
+				return
+
+			for i in range(end + 1):
+				try:
+					t = menu.type(i)
+					lbl = menu.entrycget(i, "label")
+					self.log.info("  entry[%d] type=%s label=%r", i, t, lbl)
+				except Exception as e:
+					self.log.info("  entry[%d] error=%s", i, type(e).__name__)
+		except Exception as e:
+			self.log.info("dump menus failed: %s", type(e).__name__)
+
 
 	def install_macos_quit_hook(self) -> None:
 		"""
@@ -568,14 +745,22 @@ class App(tk.Tk):
 	# Component lifecycle management
 	# -----------------------------------------------------------------------
 
+	def _mount_components_once(self) -> None:
+		if getattr(self, "_components_mounted", False):
+			return
+
+		for c in self.components:
+			c.mount(self.root_frame)
+			c.layout()
+
+		self._components_mounted = True
+
 	def add_component(self, component: Component) -> None:
 		"""
-		Add a top-level component to the app.
-
-		Component IDs must be unique within the App.
+		Register a top-level component with the app.
 		"""
 		if component.id is None:
-			raise ValueError("Component id must not be None (Component should auto-generate one)")
+			raise ValueError("Component id must not be None")
 
 		if component.id in self._components_by_id:
 			existing = self._components_by_id[component.id]
@@ -590,10 +775,7 @@ class App(tk.Tk):
 
 		if component.name is not None:
 			self._components_by_name.setdefault(component.name, []).append(component)
-
-		component.mount(self.root_frame)
-		component.layout()
-
+		
 	def remove_component(self, component: Component) -> None:
 		"""
 		Remove a component from the app and destroy it.
@@ -740,6 +922,8 @@ class App(tk.Tk):
 		"""
 		Run the Tk event loop.
 		"""
+		self._mount_components_once()
+
 		if hasattr(self, "telemetry") and self.telemetry:
 			self.telemetry.event("app.start", {"title": self.title_text})
 

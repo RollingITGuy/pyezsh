@@ -1,54 +1,76 @@
 # ---------------------------------------------------------------------------
-# File: __init__.py
+# File: ui/__init__.py
 # ---------------------------------------------------------------------------
 # Description:
-#	UI package exports for pyezsh.
+#   Public UI package surface for pyezsh.
 #
 # Notes:
-#	- Re-export commonly used UI components and menu definition types.
-#	- Menu definitions live in ui/menu_defs.py (typed items + legacy compatibility).
-#
-# ---------------------------------------------------------------------------
-# Revision History
-# ---------------------------------------------------------------------------
-# Date			Author						Change
-# ---------------------------------------------------------------------------
-# 01/01/2026	Paul G. LeDuc				Update exports for menu_defs split
-# 01/03/2026	Paul G. LeDuc				Update exports for StatusBar
-# 01/05/2026	Paul G. LeDuc				Update exports for MainLayout
-# 01/05/2026	Paul G. LeDuc				Update exports for SidebarTreeView
-# 01/06/2026	Paul G. LeDuc				Update exports for ContentViewer
+#   - Uses lazy exports to avoid circular imports (PEP 562).
+#   - Do NOT import from pyezsh.ui inside ui modules; import specific modules instead.
 # ---------------------------------------------------------------------------
 
-from .component import Component
-from .menubar import MenuBar
-from .menu_defs import (
-	SEP,
-	MenuDef,
-	MenuItem,
-	MenuItemLike,
-	MenuSeparator,
-	MenuCommand,
-	MenuSubmenu,
-)
-from .statusbar import StatusBar
-from .sidebar_treeview import SidebarTreeView
-from .content_viewer import ContentViewer
+from __future__ import annotations
 
-from .mainlayout import MainLayout
+from typing import TYPE_CHECKING, Any
 
 __all__ = [
+	# Core component base
 	"Component",
-    "ContentViewer",
+
+	# Menu system
 	"MenuBar",
-    "SEP",
-	"MenuDef",
-	"MenuItem",
-	"MenuItemLike",
-	"MenuSeparator",
-	"MenuCommand",
-	"MenuSubmenu",
-    "SidebarTreeView",
-    "StatusBar",
-    "MainLayout",
+	"MenuDef", "MenuCommand", "MenuSubmenu", "MenuSeparator", "SEP",
+
+	# Other UI components (keep adding as you want to export them)
+	"StatusBar",
+	"SidebarTreeView",
+	"ContentViewer",
+	"MainLayout",
 ]
+
+# Map public name -> (module, attribute)
+_EXPORTS: dict[str, tuple[str, str]] = {
+	# Core
+	"Component": ("pyezsh.ui.component", "Component"),   # <-- adjust module name if needed
+
+	# Menu
+	"MenuBar": ("pyezsh.ui.menubar", "MenuBar"),
+	"MenuDef": ("pyezsh.ui.menu_defs", "MenuDef"),
+	"MenuCommand": ("pyezsh.ui.menu_defs", "MenuCommand"),
+	"MenuSubmenu": ("pyezsh.ui.menu_defs", "MenuSubmenu"),
+	"MenuSeparator": ("pyezsh.ui.menu_defs", "MenuSeparator"),
+	"SEP": ("pyezsh.ui.menu_defs", "SEP"),
+
+	# Other components (adjust module names to match your tree)
+	"StatusBar": ("pyezsh.ui.statusbar", "StatusBar"),
+	"SidebarTreeView": ("pyezsh.ui.sidebar_treeview", "SidebarTreeView"),
+	"ContentViewer": ("pyezsh.ui.content_viewer", "ContentViewer"),
+	"MainLayout": ("pyezsh.ui.mainlayout", "MainLayout"),
+}
+
+def __getattr__(name: str) -> Any:
+	"""
+	Lazy attribute resolver for pyezsh.ui exports.
+	This avoids import-time circular dependencies.
+	"""
+	try:
+		mod_name, attr_name = _EXPORTS[name]
+	except KeyError as ex:
+		raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from ex
+
+	import importlib
+	mod = importlib.import_module(mod_name)
+	return getattr(mod, attr_name)
+
+def __dir__() -> list[str]:
+	return sorted(set(list(globals().keys()) + list(__all__)))
+
+if TYPE_CHECKING:
+	# Optional: for type checkers / IDEs only (won't execute at runtime)
+	from pyezsh.ui.component import Component
+	from pyezsh.ui.menubar import MenuBar
+	from pyezsh.ui.menu_defs import MenuDef, MenuCommand, MenuSubmenu, MenuSeparator, SEP
+	from pyezsh.ui.statusbar import StatusBar
+	from pyezsh.ui.sidebar_treeview import SidebarTreeView
+	from pyezsh.ui.content_viewer import ContentViewer
+	from pyezsh.ui.mainlayout import MainLayout

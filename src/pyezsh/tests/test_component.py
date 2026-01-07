@@ -21,7 +21,7 @@
 import tkinter as tk
 from tkinter import ttk
 
-from pyezsh.ui import Component
+from pyezsh.ui.component import Component
 
 
 class _TestComponent(Component):

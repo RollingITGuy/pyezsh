@@ -84,6 +84,36 @@ def register_default_commands(registry: CommandRegistry) -> None:
 		except Exception:
 			print("pyezsh - Preferences (not implemented)")
 
+	def _app_not_implemented(ctx: CommandContext) -> None:
+		"""
+		MVP placeholder for menu/command items that are not implemented yet.
+
+		The caller can pass a friendly feature name via:
+			ctx.extra["feature"] -> "File → Open"
+		"""
+		feature = str(ctx.extra.get("feature", "This action"))
+
+		try:
+			messagebox.showinfo(
+				title="Not Yet Implemented",
+				message=f"{feature}\n\nNot yet implemented.",
+				parent=ctx.app,
+			)
+		except Exception:
+			print(f"pyezsh - Not implemented: {feature}")
+
+	def _not_impl(feature: str):
+		def _handler(ctx: CommandContext) -> None:
+			# Call the shared handler, but inject feature via a new context.
+			ctx2 = CommandContext(
+				app=ctx.app,
+				state=ctx.state,
+				services=ctx.services,
+				extra={"feature": feature},
+			)
+			_app_not_implemented(ctx2)
+		return _handler
+
 	registry.register(Command(
 		id="app.about",
 		label=about_label,
@@ -102,10 +132,74 @@ def register_default_commands(registry: CommandRegistry) -> None:
 	))
 
 	registry.register(Command(
+		id="app.not_implemented",
+		label="Not Yet Implemented",
+		description="Placeholder for actions not implemented yet.",
+		handler=_app_not_implemented,
+		order=5,
+	))
+
+	registry.register(Command(
 		id="app.quit",
 		label=quit_label,
 		description="Exit pyezsh.",
 		shortcut=quit_shortcut,
 		handler=_app_quit,
 		order=20,
+	))
+
+	registry.register(Command(
+		id="ui.file.new",
+		label="New",
+		description="Create a new file (stub).",
+		handler=_not_impl("File → New"),
+		order=100,
+	))
+
+	registry.register(Command(
+		id="ui.file.open",
+		label="Open…",
+		description="Open a file (stub).",
+		handler=_not_impl("File → Open…"),
+		order=110,
+	))
+
+	registry.register(Command(
+		id="ui.file.save",
+		label="Save",
+		description="Save the current file (stub).",
+		handler=_not_impl("File → Save"),
+		order=120,
+	))
+
+	registry.register(Command(
+		id="ui.edit.cut",
+		label="Cut",
+		description="Cut selection (stub).",
+		handler=_not_impl("Edit → Cut"),
+		order=200,
+	))
+
+	registry.register(Command(
+		id="ui.edit.copy",
+		label="Copy",
+		description="Copy selection (stub).",
+		handler=_not_impl("Edit → Copy"),
+		order=210,
+	))
+
+	registry.register(Command(
+		id="ui.edit.paste",
+		label="Paste",
+		description="Paste clipboard (stub).",
+		handler=_not_impl("Edit → Paste"),
+		order=220,
+	))
+
+	registry.register(Command(
+		id="ui.help.about_stub",
+		label="About",
+		description="About dialog (stub).",
+		handler=_not_impl("Help → About"),
+		order=300,
 	))

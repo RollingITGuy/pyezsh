@@ -38,12 +38,14 @@ from __future__ import annotations
 
 from typing import cast, Callable, Any, Optional
 
+import os
 import sys
 import tkinter as tk
 
 from pyezsh.app.commands import CommandContext, CommandRegistry
 from pyezsh.core.telemetry import Telemetry
-from pyezsh.ui import Component
+from pyezsh.ui.component import Component
+
 from pyezsh.ui.menu_defs import (
 	MenuDef,
 	MenuItem,
@@ -53,6 +55,8 @@ from pyezsh.ui.menu_defs import (
 	MenuSubmenu,
 )
 
+# TODO(menu-extra):
+# Support passing per-menu-item extra context into command invocation.
 
 class MenuBar(Component):
 	"""
@@ -99,17 +103,41 @@ class MenuBar(Component):
 	def mount(self, parent: tk.Misc) -> None:
 		"""
 		Attach a tk.Menu to the toplevel window.
+
+		Idempotent:
+		- If already mounted to the same toplevel, do nothing.
+		- If mounted to a different toplevel, detach from the old one first.
 		"""
-		app = parent.winfo_toplevel()
+		# winfo_toplevel() is often typed too loosely; cast so type checkers know
+		# this is a Tk/Toplevel and supports configure(menu=...).
+		app = cast(tk.Tk | tk.Toplevel, parent.winfo_toplevel())
+
+		# If already mounted to this exact toplevel, don't mount again.
+		if self._app is app and self._menubar is not None:
+			return
+
+		# If previously mounted somewhere else, detach first.
+		if self._app is not None and self._app is not app:
+			self.destroy()
+
 		self._app = app
 
 		# Best-effort telemetry discovery from app (keeps MenuBar declarative).
 		self._telemetry = getattr(app, "telemetry", None)
 
 		menubar = tk.Menu(app, tearoff=0)
-		self._menubar = menubar
 
-		app.configure(menu=menubar)
+		# IMPORTANT: set the menu on the real toplevel (Tk/Toplevel)
+		try:
+			app.configure(menu=menubar)
+		except Exception:
+			# If this fails, nothing will render; ensure we don't keep stale state.
+			self._menubar = None
+			self._app = None
+			self._telemetry = None
+			return
+
+		self._menubar = menubar
 
 		# macOS: attaching a menu can reset native Quit handling in some builds.
 		# Re-install after attaching (your App method is idempotent).
@@ -123,8 +151,8 @@ class MenuBar(Component):
 				except Exception:
 					pass
 
+		# Render menus now
 		self._rebuild()
-
 	def layout(self) -> None:
 		pass
 
@@ -135,8 +163,8 @@ class MenuBar(Component):
 		app = self._app
 		if app is not None:
 			try:
-				if isinstance(app, (tk.Tk, tk.Toplevel)):
-					app.configure(menu=tk.Menu(app, tearoff=0))
+				tl = cast(tk.Tk | tk.Toplevel, app)
+				tl.configure(menu=tk.Menu(tl, tearoff=0))
 			except Exception:
 				pass
 
@@ -198,21 +226,31 @@ class MenuBar(Component):
 		if self._app is None or self._menubar is None:
 			return
 
+		# Always rebuild from scratch
 		self._menubar.delete(0, "end")
 
 		ctx = self._ctx()
 		registry = self._get_registry()
 		is_mac = (sys.platform == "darwin")
 
-		# 1) macOS: ensure an Apple (application) menu exists first.
+		# 1) macOS Apple menu
 		if is_mac and self._auto_app_menu:
 			self._add_apple_menu(ctx, registry)
 
-		# 2) Render the user-provided menus next (filtered on macOS when auto_app_menu=True).
+		# 2) User menus
 		menus = self._get_effective_menus(is_mac=is_mac)
 		for m in menus:
 			dropdown = tk.Menu(self._menubar, tearoff=0)
 			self._populate_dropdown(dropdown, m.items, ctx, registry, parent_path=(m.label,))
+
+			end = dropdown.index("end")
+
+			if os.getenv("PYEZSH_DEBUG_MENUS", "0") == "1":
+				print(f"[menubar] cascade={m.label!r} dropdown_end={end!r}")
+
+			if end is None or end == -1:
+				continue  # skip empty menus
+
 			self._menubar.add_cascade(label=m.label, menu=dropdown)
 
 	def _add_apple_menu(self, ctx: CommandContext, registry: CommandRegistry | None) -> None:

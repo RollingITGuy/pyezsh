@@ -5,24 +5,24 @@
 #   Unit tests for the App class.
 #
 # Notes:
-#   - Validates App lifecycle and component management.
-#   - Uses a minimal test Component for isolation.
+#   - App.add_component() registers only (no mount/layout side effects).
+#   - Tests explicitly mount components when widget existence is required.
 #
 # ---------------------------------------------------------------------------
 # Revision History
 # ---------------------------------------------------------------------------
-# Date			Author						Change
+# Date          Author                      Change
 # ---------------------------------------------------------------------------
-# 12/26/2025	Paul G. LeDuc				Initial tests
-# 12/30/2025	Paul G. LeDuc				Update for component id/name support
-# 12/30/2025	Paul G. LeDuc				Update for tk.Misc parent typing
+# 12/26/2025    Paul G. LeDuc               Initial tests
+# 12/30/2025    Paul G. LeDuc               Update for component id/name support
+# 01/07/2026    Paul G. LeDuc               Update: add_component is registration-only
 # ---------------------------------------------------------------------------
 
 import tkinter as tk
 from tkinter import ttk
 
-from pyezsh.app import App
-from pyezsh.ui import Component
+from pyezsh.app.app import App
+from pyezsh.ui.component import Component
 
 
 class _TestComponent(Component):
@@ -36,7 +36,6 @@ class _TestComponent(Component):
 def test_app_default_title():
 	app = App(title=None)
 	try:
-		# Validate window title via Tk
 		assert app.wm_title() == "pyezsh"
 	finally:
 		app.destroy()
@@ -45,14 +44,13 @@ def test_app_default_title():
 def test_app_has_components_list():
 	app = App()
 	try:
-		assert hasattr(app, "components")
 		assert isinstance(app.components, list)
 		assert len(app.components) == 0
 	finally:
 		app.destroy()
 
 
-def test_app_add_component_mounts_component():
+def test_app_add_component_registers_component_only():
 	app = App()
 	try:
 		component = _TestComponent()
@@ -60,21 +58,26 @@ def test_app_add_component_mounts_component():
 
 		assert len(app.components) == 1
 		assert app.components[0] is component
-		assert component.root is not None
-		assert component.parent is app.root_frame
+
+		# Registration-only: no mount/layout side effects.
+		assert component.root is None
+		assert component.parent is None
 	finally:
 		app.destroy()
 
 
-def test_app_remove_component_destroys_component():
+def test_app_remove_component_destroys_component_if_mounted():
 	app = App()
 	try:
 		component = _TestComponent()
 		app.add_component(component)
 
+		# Explicitly mount to create the widget tree
+		component.mount(app.root_frame)
+		assert component.root is not None
+		assert component.root.winfo_exists() == 1
+
 		root_widget = component.root
-		assert root_widget is not None
-		assert root_widget.winfo_exists() == 1
 
 		app.remove_component(component)
 
