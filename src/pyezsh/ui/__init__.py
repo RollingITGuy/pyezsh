@@ -16,6 +16,7 @@
 # 01/01/2026	Paul G. LeDuc				Update exports for menu_defs split
 # 01/03/2026	Paul G. LeDuc				Update exports for StatusBar
 # 01/05/2026	Paul G. LeDuc				Update exports for MainLayout
+# 01/05/2026	Paul G. LeDuc				Update exports for SidebarTreeView
 # ---------------------------------------------------------------------------
 
 from .component import Component
@@ -30,6 +31,8 @@ from .menu_defs import (
 	MenuSubmenu,
 )
 from .statusbar import StatusBar
+from .sidebar_treeview import SidebarTreeView
+
 from .mainlayout import MainLayout
 
 __all__ = [
@@ -42,6 +45,7 @@ __all__ = [
 	"MenuSeparator",
 	"MenuCommand",
 	"MenuSubmenu",
+    "SidebarTreeView",
     "StatusBar",
     "MainLayout",
 ]

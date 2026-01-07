@@ -17,6 +17,7 @@
 # Date			Author						Change
 # ---------------------------------------------------------------------------
 # 01/05/2026	Paul G. LeDuc				Initial coding / release
+# 01/06/2026	Paul G. LeDuc				Add typed accessors + non-Optional frames after mount
 # ---------------------------------------------------------------------------
 
 from __future__ import annotations
@@ -48,7 +49,15 @@ class MainLayout:
 	min_props_height: int = 120
 	min_telemetry_height: int = 120
 
+	# -----------------------------------------------------------------------
 	# Internal widgets
+	#
+	# These are initialized in mount(). They remain Optional internally so we
+	# can represent "not mounted yet", but callers should use the typed
+	# properties (sidebar_parent/content_parent/props_parent/telemetry_parent)
+	# which assert they exist.
+	# -----------------------------------------------------------------------
+
 	root: ttk.Frame | None = field(default=None, init=False, repr=False)
 
 	sidebar_frame: ttk.Frame | None = field(default=None, init=False, repr=False)
@@ -71,7 +80,46 @@ class MainLayout:
 	_drag_start_right: int = field(default=0, init=False, repr=False)
 	_drag_start_props_h: int = field(default=0, init=False, repr=False)
 
+	# -----------------------------------------------------------------------
+	# Typed accessors (preferred by callers)
+	# -----------------------------------------------------------------------
+
+	@property
+	def sidebar_parent(self) -> ttk.Frame:
+		if self.sidebar_frame is None:
+			raise RuntimeError("MainLayout is not mounted yet (sidebar_frame is None).")
+		return self.sidebar_frame
+
+	@property
+	def content_parent(self) -> ttk.Frame:
+		if self.content_frame is None:
+			raise RuntimeError("MainLayout is not mounted yet (content_frame is None).")
+		return self.content_frame
+
+	@property
+	def props_parent(self) -> ttk.Frame:
+		if self.props_frame is None:
+			raise RuntimeError("MainLayout is not mounted yet (props_frame is None).")
+		return self.props_frame
+
+	@property
+	def telemetry_parent(self) -> ttk.Frame:
+		if self.telemetry_frame is None:
+			raise RuntimeError("MainLayout is not mounted yet (telemetry_frame is None).")
+		return self.telemetry_frame
+
+	# -----------------------------------------------------------------------
+	# Layout construction
+	# -----------------------------------------------------------------------
+
 	def mount(self, parent: tk.Misc) -> ttk.Frame:
+		"""
+		Create and attach the layout widgets to the given parent.
+
+		Important:
+		- This method DOES NOT call pack/grid/place on the returned root.
+		- The caller (App) should pack/grid the returned widget.
+		"""
 		root = ttk.Frame(parent)
 		self.root = root
 
@@ -89,7 +137,12 @@ class MainLayout:
 		self.sidebar_frame.grid(row=0, column=0, sticky="nsew")
 
 		# Vertical splitter (left)
-		self._splitter_left = tk.Frame(root, bg=self.splitter_color, width=int(self.splitter_width), cursor="sb_h_double_arrow")
+		self._splitter_left = tk.Frame(
+			root,
+			bg=self.splitter_color,
+			width=int(self.splitter_width),
+			cursor="sb_h_double_arrow",
+		)
 		self._splitter_left.grid(row=0, column=1, sticky="ns")
 
 		# Content
@@ -97,7 +150,12 @@ class MainLayout:
 		self.content_frame.grid(row=0, column=2, sticky="nsew")
 
 		# Vertical splitter (right)
-		self._splitter_right = tk.Frame(root, bg=self.splitter_color, width=int(self.splitter_width), cursor="sb_h_double_arrow")
+		self._splitter_right = tk.Frame(
+			root,
+			bg=self.splitter_color,
+			width=int(self.splitter_width),
+			cursor="sb_h_double_arrow",
+		)
 		self._splitter_right.grid(row=0, column=3, sticky="ns")
 
 		# Right container (Properties / Telemetry stack)
@@ -116,7 +174,12 @@ class MainLayout:
 		self.props_frame = ttk.Frame(self.right_container)
 		self.props_frame.grid(row=0, column=0, sticky="nsew")
 
-		self._splitter_h = tk.Frame(self.right_container, bg=self.splitter_color, height=int(self.h_splitter_height), cursor="sb_v_double_arrow")
+		self._splitter_h = tk.Frame(
+			self.right_container,
+			bg=self.splitter_color,
+			height=int(self.h_splitter_height),
+			cursor="sb_v_double_arrow",
+		)
 		self._splitter_h.grid(row=1, column=0, sticky="ew")
 
 		self.telemetry_frame = ttk.Frame(self.right_container)
@@ -128,8 +191,6 @@ class MainLayout:
 		# Ensure geometry is computed before first drag
 		root.after_idle(self._prime_geometry)
 
-
-		root.pack(fill="both", expand=True)
 		return root
 
 	def _prime_geometry(self) -> None:
@@ -253,7 +314,12 @@ class MainLayout:
 			return
 
 	def _get_props_height(self) -> int:
-		# Prefer the configured/current grid minsize (stable), then fallback to widget height.
+		"""
+		Return the current properties panel height.
+
+		We prefer the configured/current grid minsize (stable), then fallback to
+		the widget's reported height.
+		"""
 		if self.right_container is not None:
 			try:
 				info = self.right_container.grid_rowconfigure(0)
@@ -277,7 +343,9 @@ class MainLayout:
 		return h
 
 	def _set_splitter_active(self, which: str, active: bool) -> None:
-		# Optional: slightly darken the splitter while dragging
+		"""
+		Optional: slightly darken the splitter while dragging.
+		"""
 		color = self.splitter_color if not active else "#9E9E9E"
 
 		if which == "left" and self._splitter_left is not None:

@@ -44,6 +44,7 @@ from dataclasses import dataclass
 from typing import Any, Optional
 import logging
 import sys
+from pathlib import Path
 
 import tkinter as tk
 from tkinter import ttk
@@ -67,6 +68,7 @@ from pyezsh.ui import MenuDef
 
 # StatusBar
 from pyezsh.ui import StatusBar
+from pyezsh.ui import SidebarTreeView
 
 from pyezsh.services import StatusService
 
@@ -207,17 +209,42 @@ class App(tk.Tk):
 			splitter_width=int(self.cfg.get("splitter_width", 2)),
 			splitter_color=str(self.cfg.get("splitter_color", "#C8C8C8")),
 		)
-		self.main_layout.mount(self.root_frame)
 
-		# MVP placeholders (temporary)
-		ttk.Label(self.main_layout.sidebar_frame, text="Sidebar").pack(anchor="nw", padx=8, pady=8)
-		ttk.Label(self.main_layout.content_frame, text="Content").pack(anchor="nw", padx=8, pady=8)
-		ttk.Label(self.main_layout.props_frame, text="Properties").pack(anchor="nw", padx=8, pady=8)
-		ttk.Label(self.main_layout.telemetry_frame, text="Telemetry").pack(anchor="nw", padx=8, pady=8)
-
+		# Mount the layout into root_frame and pack the returned root widget.
+		layout_root = self.main_layout.mount(self.root_frame)
+		layout_root.pack(fill="both", expand=True)
 
 		# -------------------------------------------------------------------
-		# StatusBar 
+		# MVP pane headers + bodies (titles stay, bodies get rebuilt on select)
+		# -------------------------------------------------------------------
+
+		def _panel(parent: ttk.Frame, title: str) -> ttk.Frame:
+			"""
+			Create a panel with a fixed title/header and a body frame.
+			The returned body frame is where dynamic content should be placed.
+			"""
+			header = ttk.Frame(parent)
+			header.pack(side="top", fill="x")
+
+			ttk.Label(header, text=title).pack(side="left", anchor="w", padx=8, pady=4)
+
+			sep = ttk.Separator(parent, orient="horizontal")
+			sep.pack(side="top", fill="x")
+
+			body = ttk.Frame(parent)
+			body.pack(side="top", fill="both", expand=True)
+
+			return body
+
+		# Sidebar title can remain in the tree component itself if you want,
+		# but we'll standardize all panes the same way for the MVP.
+		self._sidebar_body = _panel(self.main_layout.sidebar_parent, "Sidebar")
+		self._content_body = _panel(self.main_layout.content_parent, "Content")
+		self._props_body = _panel(self.main_layout.props_parent, "Properties")
+		self._telemetry_body = _panel(self.main_layout.telemetry_parent, "Telemetry")
+
+		# -------------------------------------------------------------------
+		# StatusBar
 		# -------------------------------------------------------------------
 
 		self.statusbar = StatusBar(height_rows=int(self.cfg.get("statusbar_rows", 1)), debug=False)
@@ -226,7 +253,7 @@ class App(tk.Tk):
 
 		# Now pack root_frame (non-scrollable mode)
 		if not bool(self.cfg.get("scrollable", False)):
-			self.root_frame.pack(fill="both", expand=True)		
+			self.root_frame.pack(fill="both", expand=True)
 
 		# Mirror app logs into the StatusBar (middle section by default)
 		if bool(self.cfg.get("statusbar_log_enabled", True)):
@@ -240,16 +267,49 @@ class App(tk.Tk):
 			)
 
 			self.log.info("Welcome to pyezsh!")
-			
+
 		# -------------------------------------------------------------------
 		# Services
 		# -------------------------------------------------------------------
 
 		status = StatusService()
-		self.services["status"] = status	
+		self.services["status"] = status
 		status.attach_sink(self.statusbar)
 		status.set_left("Ready")
 		status.set_right(self.title_text)
+
+		def _on_sidebar_select(p: Path) -> None:
+			# Statusbar + telemetry hook points 
+			status = self.services.get("status")
+			if status is not None:
+				try:
+					status.set_left(str(p))
+				except Exception:
+					pass
+
+			# Content
+			for child in self._content_body.winfo_children():
+				child.destroy()
+			ttk.Label(self._content_body, text=f"Selected: {p}").pack(anchor="nw", padx=8, pady=8)
+
+			# Properties
+			for child in self._props_body.winfo_children():
+				child.destroy()
+			ttk.Label(self._props_body, text=f"Path: {p}").pack(anchor="nw", padx=8, pady=8)
+
+			# Telemetry
+			for child in self._telemetry_body.winfo_children():
+				child.destroy()
+			ttk.Label(self._telemetry_body, text=f"Selected name: {p.name}").pack(anchor="nw", padx=8, pady=8)
+
+		self.sidebar = SidebarTreeView(
+			base_path=Path.cwd(),
+			hide_dotfiles=True,
+			on_select=_on_sidebar_select,
+		)
+		self.sidebar.mount(self._sidebar_body)
+		self.sidebar.layout()
+
 
 	# -----------------------------------------------------------------------
 	# Command / keymap wrappers
