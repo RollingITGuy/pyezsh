@@ -69,6 +69,7 @@ from pyezsh.ui import MenuDef
 # StatusBar
 from pyezsh.ui import StatusBar
 from pyezsh.ui import SidebarTreeView
+from pyezsh.ui import ContentViewer
 
 from pyezsh.services import StatusService
 
@@ -244,6 +245,14 @@ class App(tk.Tk):
 		self._telemetry_body = _panel(self.main_layout.telemetry_parent, "Telemetry")
 
 		# -------------------------------------------------------------------
+		# Content viewer
+		# -------------------------------------------------------------------
+
+		self.content_viewer = ContentViewer()
+		self.content_viewer.mount(self._content_body)
+		self.content_viewer.layout()
+
+		# -------------------------------------------------------------------
 		# StatusBar
 		# -------------------------------------------------------------------
 
@@ -288,9 +297,7 @@ class App(tk.Tk):
 					pass
 
 			# Content
-			for child in self._content_body.winfo_children():
-				child.destroy()
-			ttk.Label(self._content_body, text=f"Selected: {p}").pack(anchor="nw", padx=8, pady=8)
+			self.content_viewer.set_path(p)
 
 			# Properties
 			for child in self._props_body.winfo_children():

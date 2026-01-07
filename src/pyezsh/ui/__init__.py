@@ -17,6 +17,7 @@
 # 01/03/2026	Paul G. LeDuc				Update exports for StatusBar
 # 01/05/2026	Paul G. LeDuc				Update exports for MainLayout
 # 01/05/2026	Paul G. LeDuc				Update exports for SidebarTreeView
+# 01/06/2026	Paul G. LeDuc				Update exports for ContentViewer
 # ---------------------------------------------------------------------------
 
 from .component import Component
@@ -32,11 +33,13 @@ from .menu_defs import (
 )
 from .statusbar import StatusBar
 from .sidebar_treeview import SidebarTreeView
+from .content_viewer import ContentViewer
 
 from .mainlayout import MainLayout
 
 __all__ = [
 	"Component",
+    "ContentViewer",
 	"MenuBar",
     "SEP",
 	"MenuDef",
