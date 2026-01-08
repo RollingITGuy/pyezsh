@@ -292,13 +292,14 @@ class App(tk.Tk):
 		status.set_right(self.title_text)
 
 		def _on_sidebar_select(p: Path) -> None:
-			# Statusbar + telemetry hook points 
+			# Statusbar + telemetry hook points
 			status = self.services.get("status")
 			if status is not None:
 				try:
 					status.set_left(str(p))
-				except Exception:
-					pass
+				except Exception as ex:
+					#print(f"[status] failed to set_left: {ex}")
+					self.log.error(f"[status] failed to set_left: {ex}")
 
 			# Content
 			self.content_viewer.set_path(p)
@@ -306,15 +307,40 @@ class App(tk.Tk):
 			# Properties
 			for child in self._props_body.winfo_children():
 				child.destroy()
-			ttk.Label(self._props_body, text=f"Path: {p}").pack(anchor="nw", padx=8, pady=8)
+
+			try:
+				is_dir = p.is_dir()
+			except Exception:
+				is_dir = False
+
+			type_label = "Directory" if is_dir else "File"
+
+			size_text = ""
+			if not is_dir:
+				try:
+					size_text = f"\nSize: {p.stat().st_size} bytes"
+				except Exception:
+					size_text = "\nSize: (unavailable)"
+
+			ttk.Label(
+				self._props_body,
+				text=f"Path: {p}\nType: {type_label}{size_text}",
+				justify="left",
+			).pack(anchor="nw", padx=8, pady=8)
 
 			# Telemetry
 			for child in self._telemetry_body.winfo_children():
 				child.destroy()
-			ttk.Label(self._telemetry_body, text=f"Selected name: {p.name}").pack(anchor="nw", padx=8, pady=8)
+
+			ttk.Label(
+				self._telemetry_body,
+				text=f"Selected: {p.name}\nType: {type_label}",
+				justify="left",
+			).pack(anchor="nw", padx=8, pady=8)
 
 		self.sidebar = SidebarTreeView(
-			base_path=Path.cwd(),
+			base_path=None,
+			max_depth=3,
 			hide_dotfiles=True,
 			on_select=_on_sidebar_select,
 		)

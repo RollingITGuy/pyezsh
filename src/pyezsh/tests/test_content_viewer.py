@@ -83,3 +83,13 @@ def test_set_path_truncates_lines(tmp_path: Path) -> None:
 	assert "a\n" in out
 	assert "b\n" in out
 	assert "truncated" in out.lower()
+
+def test_set_path_missing_file_reports_error(tmp_path: Path) -> None:
+	p = tmp_path / "missing.txt"
+
+	v = _CaptureViewer()
+	v.set_path(p)
+
+	assert v.writes
+	assert "error reading file" in v.writes[-1].lower()
+	assert "missing.txt" in v.writes[-1]

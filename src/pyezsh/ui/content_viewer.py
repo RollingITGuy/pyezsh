@@ -77,7 +77,12 @@ class ContentViewer:
 		# _write/_append guard against missing widgets, and tests can override
 		# them to validate decision logic without a GUI.
 
-		if p.is_dir():
+		try:
+			is_dir = p.is_dir()
+		except Exception:
+			is_dir = False
+
+		if is_dir:
 			self._write(f"Directory:\n{p}\n\n")
 			try:
 				count = sum(1 for _ in p.iterdir())

@@ -64,3 +64,12 @@ def test_safe_iterdir_truncates_max_children(tmp_path: Path) -> None:
 	items = stv._safe_iterdir(tmp_path)
 
 	assert len(items) == 5
+
+def test_safe_iterdir_max_children_zero_means_no_cap(tmp_path: Path) -> None:
+	for i in range(20):
+		_touch(tmp_path / f"f{i:02d}.txt", text="x")
+
+	stv = SidebarTreeView(base_path=tmp_path, hide_dotfiles=False, max_children_per_dir=0)
+	items = stv._safe_iterdir(tmp_path)
+
+	assert len(items) == 20
